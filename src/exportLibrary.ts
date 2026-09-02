@@ -8,6 +8,23 @@ import { login } from "./login";
 import renderConversation from "./renderConversation";
 import { loadDoneFile, saveDoneFile, sleep } from "./utils";
 
+function buildFilename(threadData: any, fallbackId: string): string {
+  const entry = threadData.conversation?.entries?.[0];
+  const title: string = entry?.thread_title || fallbackId;
+  const createdAt: string = entry?.created_at || "";
+  const dateStr = createdAt
+    ? createdAt.slice(0, 10)
+    : new Date().toISOString().slice(0, 10);
+
+  const safeTitle = title
+    .replace(/[<>:"/\\|?*\x00-\x1F]/g, "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 50);
+
+  return `${safeTitle} ${dateStr}`;
+}
+
 export interface ExportLibraryOptions {
   outputDir: string;
   doneFilePath: string;
@@ -64,11 +81,13 @@ export default async function exportLibrary(options: ExportLibraryOptions) {
       const maxAttempts = 2;
       while (attempt < maxAttempts) {
         attempt += 1;
+
         try {
           const threadData = await conversationSaver.loadThreadFromURL(conversation.url);
+          const filename = buildFilename(threadData, threadData.id);
 
           await fs.writeFile(
-            `${options.outputDir}/${threadData.id}.json`,
+            `${options.outputDir}/${filename}.json`,
             JSON.stringify(threadData.conversation, null, 2)
           );
 
@@ -77,9 +96,9 @@ export default async function exportLibrary(options: ExportLibraryOptions) {
             markdown = renderConversation(threadData.conversation);
           } catch (renderErr: any) {
             console.error(`  Render failed (saving JSON only): ${renderErr.message}`);
-            markdown = `# Render error\n\nSee ${threadData.id}.json for raw data.\n\nError: ${renderErr.message}\n`;
+            markdown = `# Render error\n\nSee ${filename}.json for raw data.\n\nError: ${renderErr.message}\n`;
           }
-          await fs.writeFile(`${options.outputDir}/${threadData.id}.md`, markdown);
+          await fs.writeFile(`${options.outputDir}/${filename}.md`, markdown);
 
           doneFile.processedUrls.push(conversation.url);
           await saveDoneFile(doneFile, options.doneFilePath);
