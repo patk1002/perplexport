@@ -1,12 +1,13 @@
 import { Page } from "puppeteer";
 
 const COOKIE_BANNER_SELECTORS = [
+  "button::-p-text('Got it')",
+  "button::-p-text('Decline optional')",
   "button::-p-text('Accept All Cookies')",
   "button::-p-text('Accept All')",
   "button::-p-text('Accept all')",
   "button::-p-text('Accept')",
   "button::-p-text('I agree')",
-  // Czech variants — Perplexity localizes the banner per region
   "button::-p-text('Souhlasím')",
   "button::-p-text('Přijmout vše')",
   "button::-p-text('Přijmout všechny')",
@@ -38,6 +39,19 @@ export async function login(page: Page, email: string): Promise<void> {
     }
   }
 
+    // Sidebar is collapsed by default; the sign-in trigger likely lives inside it.
+  try {
+    await page.waitForSelector('button[aria-label="Open sidebar"]', { timeout: 5000 });
+    await page.click('button[aria-label="Open sidebar"]');
+    console.log("Opened sidebar");
+    await sleep(1500);
+  } catch {
+    console.log("Sidebar toggle not found or already open");
+  }
+
+  // DEBUG: see what's available now that sidebar (should be) open
+  await page.screenshot({ path: "/home/patk1/debug2.png" });
+  
   // Email input
   await page.waitForSelector('input[type="email"]', { timeout: 30000 });
   await page.type('input[type="email"]', email);

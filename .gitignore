@@ -2,3 +2,5 @@ node_modules
 conversations
 done.json
 dist
+package-lock.json
+*_orig.ts
