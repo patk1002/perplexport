@@ -11,7 +11,7 @@ import { loadDoneFile, saveDoneFile, sleep } from "./utils";
 function buildFilename(threadData: any, fallbackId: string): string {
   const entry = threadData.conversation?.entries?.[0];
   const title: string = entry?.thread_title || fallbackId;
-  const createdAt: string = entry?.created_at || "";
+  const createdAt: string = entry?.entry_created_datetime || "";
   const dateStr = createdAt
     ? createdAt.slice(0, 10)
     : new Date().toISOString().slice(0, 10);
@@ -65,7 +65,7 @@ export default async function exportLibrary(options: ExportLibraryOptions) {
       conversationSaver = new ConversationSaver(page);
       await conversationSaver.initialize();
       try {
-        await page.goto("https://www.perplexity.ai/", { waitUntil: "domcontentloaded", timeout: 30000 });
+        await page.goto("https://www.perplexity.ai/", { waitUntil: "domcontentloaded", timeout: 300000 });
       } catch { /* best-effort */ }
       await sleep(2000);
     };
@@ -110,7 +110,8 @@ export default async function exportLibrary(options: ExportLibraryOptions) {
             msg.includes("detached Frame") ||
             msg.includes("Target closed") ||
             msg.includes("Session closed") ||
-            msg.includes("Protocol error");
+            msg.includes("Protocol error") ||
+            msg.includes("Runtime.callFunctionOn timed out");
           if (isFrameError && attempt < maxAttempts && recoveryCount < maxRecoveriesPerRun) {
             recoveryCount += 1;
             console.error(`  Frame error (attempt ${attempt}/${maxAttempts}, recovery ${recoveryCount}/${maxRecoveriesPerRun}): ${msg}`);
@@ -121,6 +122,9 @@ export default async function exportLibrary(options: ExportLibraryOptions) {
           failCount += 1;
           break;
         }
+      }
+      if (okCount > 0 && okCount % 50 === 0) {
+        await recreatePage("periodic refresh");
       }
       await sleep(2000); // be polite
     }
