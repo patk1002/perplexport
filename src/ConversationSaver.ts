@@ -52,7 +52,7 @@ export class ConversationSaver {
 
     return await this.page.evaluate(
       async (tid: string, blocks: string[]): Promise<ThreadData> => {
-        const PAGE_LIMIT = 1000;
+        const PAGE_LIMIT = 25;
         let offset = 0;
         let merged: ConversationResponse | null = null;
         const blocksParam = blocks.map((b) => `supported_block_use_cases=${b}`).join("&");

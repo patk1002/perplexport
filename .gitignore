@@ -5,3 +5,4 @@ dist
 package-lock.json
 *_orig.ts
 my-export/
+*.log
