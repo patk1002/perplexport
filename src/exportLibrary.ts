@@ -42,7 +42,7 @@ export default async function exportLibrary(options: ExportLibraryOptions) {
   const browser: Browser = await puppeteer.launch({
     // Authentication is interactive — user types the login code into the window.
     headless: false,
-    protocolTimeout: 300000,
+    protocolTimeout: 1800000,
     args: ["--disable-dev-shm-usage", "--js-flags=--max-old-space-size=4096"],
 
   });
