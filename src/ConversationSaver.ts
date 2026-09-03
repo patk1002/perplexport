@@ -1,6 +1,5 @@
 import { Page } from "puppeteer";
 import { ConversationResponse } from "./types/conversation";
-import { sleep } from "./utils";
 
 interface ThreadData {
   id: string;
@@ -79,7 +78,9 @@ export class ConversationSaver {
               `before retry ${attempt}/${RATE_LIMIT_RETRIES}...`
             );
 
-            await sleep(RATE_LIMIT_WAIT_MS);
+            await new Promise<void>((resolve) =>
+              setTimeout(resolve, RATE_LIMIT_WAIT_MS)
+            );
           }
 
           if (!resp || !resp.ok) {
@@ -102,7 +103,9 @@ export class ConversationSaver {
           if (!(data as any).has_next_page) break;
           if (entries.length === 0) break;
           offset += entries.length;
-          await sleep(PAGE_DELAY_MS);
+          await new Promise<void>((resolve) =>
+            setTimeout(resolve, PAGE_DELAY_MS)
+          );
         }
         return { id: tid, conversation: merged as ConversationResponse };
       },
