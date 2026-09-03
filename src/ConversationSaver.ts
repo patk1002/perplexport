@@ -1,5 +1,6 @@
 import { Page } from "puppeteer";
 import { ConversationResponse } from "./types/conversation";
+import { sleep } from "./utils";
 
 interface ThreadData {
   id: string;
@@ -53,17 +54,38 @@ export class ConversationSaver {
     return await this.page.evaluate(
       async (tid: string, blocks: string[]): Promise<ThreadData> => {
         const PAGE_LIMIT = 25;
+        const PAGE_DELAY_MS = 5_000;        // Wait 5 seconds after each successful page.
+        const RATE_LIMIT_WAIT_MS = 60_000;  // Wait 60 seconds after HTTP 429.
+        const RATE_LIMIT_RETRIES = 5;       // Retry a rate-limited page up to five times.
         let offset = 0;
         let merged: ConversationResponse | null = null;
         const blocksParam = blocks.map((b) => `supported_block_use_cases=${b}`).join("&");
         for (let i = 0; i < 50; i++) {
           const u = `/rest/thread/${tid}?with_parent_info=true&with_schematized_response=true&version=2.18&source=default&limit=${PAGE_LIMIT}&offset=${offset}&from_first=true&${blocksParam}`;
-          const resp = await fetch(u, {
-            credentials: "include",
-            headers: { Accept: "application/json" },
-          });
-          if (!resp.ok) {
-            throw new Error(`HTTP ${resp.status} fetching thread ${tid} (offset=${offset})`);
+          let resp: Response | undefined;
+
+          for (let attempt = 1; attempt <= RATE_LIMIT_RETRIES; attempt++) {
+            resp = await fetch(u, {
+              credentials: "include",
+              headers: { Accept: "application/json" },
+            });
+
+            if (resp.status !== 429) {
+              break;
+            }
+
+            console.log(
+              `  HTTP 429 at offset=${offset}; waiting ${RATE_LIMIT_WAIT_MS / 1000}s ` +
+              `before retry ${attempt}/${RATE_LIMIT_RETRIES}...`
+            );
+
+            await sleep(RATE_LIMIT_WAIT_MS);
+          }
+
+          if (!resp || !resp.ok) {
+            throw new Error(
+              `HTTP ${resp?.status ?? "unknown"} fetching thread ${tid} (offset=${offset})`
+            );
           }
           const data = (await resp.json()) as ConversationResponse;
           const entries = (data as any).entries || [];
@@ -80,6 +102,7 @@ export class ConversationSaver {
           if (!(data as any).has_next_page) break;
           if (entries.length === 0) break;
           offset += entries.length;
+          await sleep(PAGE_DELAY_MS);
         }
         return { id: tid, conversation: merged as ConversationResponse };
       },
