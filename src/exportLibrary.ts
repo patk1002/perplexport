@@ -8,13 +8,32 @@ import { login } from "./login";
 import renderConversation from "./renderConversation";
 import { loadDoneFile, saveDoneFile, sleep } from "./utils";
 
+function formatLocalTimestamp(isoString: string, timeZone = "America/Chicago"): string {
+  const date = new Date(isoString);
+
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+  }).formatToParts(date);
+
+  const get = (type: string) => parts.find((p) => p.type === type)?.value ?? "00";
+
+  return `${get("year")}${get("month")}${get("day")}${get("hour")}${get("minute")}${get("second")}`;
+}
+
 function buildFilename(threadData: any, fallbackId: string): string {
   const entry = threadData.conversation?.entries?.[0];
   const title: string = entry?.thread_title || fallbackId;
-  const createdAt: string = entry?.entry_created_datetime || "";
-  const dateStr = createdAt
-    ? createdAt.slice(0, 10)
-    : new Date().toISOString().slice(0, 10);
+  const updatedAt: string = entry?.entry_updated_datetime || "";
+  const timestamp = updatedAt
+    ? formatLocalTimestamp(updatedAt)
+    : formatLocalTimestamp(new Date().toISOString());
 
   const safeTitle = title
     .replace(/[<>:"/\\|?*\x00-\x1F]/g, "")
@@ -22,7 +41,7 @@ function buildFilename(threadData: any, fallbackId: string): string {
     .trim()
     .slice(0, 50);
 
-  return `${safeTitle} ${dateStr}`;
+  return `${timestamp} ${safeTitle}`;
 }
 
 export interface ExportLibraryOptions {
