@@ -4,10 +4,11 @@ import { DoneFile } from "./types";
 export async function loadDoneFile(doneFilePath: string): Promise<DoneFile> {
   try {
     const content = await fs.readFile(doneFilePath, "utf-8");
-    return JSON.parse(content);
+    const parsed = JSON.parse(content);
+    return { processed: parsed.processed || {} };
   } catch (error) {
     console.error(`Error loading done file ${doneFilePath}:`, error);
-    return { processedUrls: [] };
+    return { processed: {} };
   }
 }
 

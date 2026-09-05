@@ -56,7 +56,7 @@ export default async function exportLibrary(options: ExportLibraryOptions) {
   await fs.mkdir(options.outputDir, { recursive: true });
 
   const doneFile = await loadDoneFile(options.doneFilePath);
-  console.log(`Loaded ${doneFile.processedUrls.length} processed URLs from done file`);
+  console.log(`Loaded ${Object.keys(doneFile.processed).length} processed URLs from done file`);
 
   const browser: Browser = await puppeteer.launch({
     // Authentication is interactive — user types the login code into the window.
@@ -108,6 +108,17 @@ export default async function exportLibrary(options: ExportLibraryOptions) {
           const threadData = await conversationSaver.loadThreadFromURL(conversation.url);
           const filename = buildFilename(threadData, threadData.id);
 
+          const previous = doneFile.processed[conversation.slug];
+          if (previous?.filename && previous.filename !== filename) {
+            for (const ext of [".json", ".md"]) {
+              try {
+                await fs.unlink(`${options.outputDir}/${previous.filename}${ext}`);
+              } catch {
+                // old file may not exist; ignore
+              }
+            }
+          }
+
           await fs.writeFile(
             `${options.outputDir}/${filename}.json`,
             JSON.stringify(threadData.conversation, null, 2)
@@ -122,7 +133,10 @@ export default async function exportLibrary(options: ExportLibraryOptions) {
           }
           await fs.writeFile(`${options.outputDir}/${filename}.md`, markdown);
 
-          doneFile.processedUrls.push(conversation.url);
+          doneFile.processed[conversation.slug] = {
+            updatedAt: conversation.updatedAt,
+            filename,
+          };
           await saveDoneFile(doneFile, options.doneFilePath);
           okCount += 1;
           break;

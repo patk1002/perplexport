@@ -9,6 +9,7 @@ const NEXT_PAGE_HASH = "e207cce86b2c9b67fca3ea7d8450d675ec86c0c429b38e42e88f3b02
 interface RawThread {
   slug: string;
   name: string;
+  updatedAt: string;
 }
 
 async function fetchGraphQL(
@@ -97,9 +98,14 @@ export async function getConversations(
   console.log(`Found ${all.length} threads in library`);
 
   return all
-    .filter((t) => !doneFile.processedUrls.includes(`https://www.perplexity.ai/search/${t.slug}`))
     .map((t) => ({
       title: t.name || "Untitled",
       url: `https://www.perplexity.ai/search/${t.slug}`,
-    }));
+      slug: t.slug,
+      updatedAt: t.updatedAt,
+    }))
+    .filter((c) => {
+      const known = doneFile.processed[c.slug];
+      return !known || known.updatedAt !== c.updatedAt;
+    });
 }
