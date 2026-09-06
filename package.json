@@ -1,6 +1,6 @@
 {
   "name": "perplexport",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Export Perplexity conversations as markdown files",
   "main": "dist/index.js",
   "bin": {
@@ -23,6 +23,10 @@
     "automation"
   ],
   "author": "Leonid Shevtsov <leonid@shevtsov.me>",
+  "contributors": [
+    "Ondřej Sedláček (https://github.com/osedlacek)",
+    "Pat Kelly (https://github.com/patk1002)"
+  ],
   "license": "MIT",
   "dependencies": {
     "commander": "^11.0.0",
@@ -40,10 +44,10 @@
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/leonid-shevtsov/perplexport.git"
+    "url": "https://github.com/patk1002/perplexport.git"
   },
   "bugs": {
-    "url": "https://github.com/leonid-shevtsov/perplexport/issues"
+    "url": "https://github.com/patk1002/perplexport/issues"
   },
-  "homepage": "https://github.com/leonid-shevtsov/perplexport#readme"
+  "homepage": "https://github.com/patk1002/perplexport#readme"
 }

@@ -1,4 +1,37 @@
-# Perplexity Conversation Exporter (osedlacek fork)
+# Perplexity Conversation Exporter (patk1002 fork)
+
+> **Fork notice (2026-09-05).** This fork builds on
+> [`osedlacek/perplexport`](https://github.com/osedlacek/perplexport) (itself
+> a fork of the original [`leonid-shevtsov/perplexport`](https://github.com/leonid-shevtsov/perplexport)),
+> adding incremental re-export support and Central-time-stamped filenames.
+>
+> **What changed (vs `osedlacek/main`):**
+>
+> 1. **Filename format** (`src/exportLibrary.ts`) — filenames now start with
+>    a `YYYYMMDDHHMMSS` prefix derived from each thread's
+>    `entry_updated_datetime`, converted from UTC to `America/Chicago` local
+>    time via `Intl.DateTimeFormat` (correctly handles the CST/CDT
+>    transition with no manual offset math). Previously, filenames ended
+>    with a plain `YYYY-MM-DD` suffix based on creation date, which didn't
+>    reflect edits and didn't sort chronologically by recency.
+> 2. **Incremental re-export** (`src/types.ts`, `src/listConversations.ts`,
+>    `src/utils.ts`, `src/exportLibrary.ts`) — `done.json` changed from a
+>    flat array of processed URLs to a map keyed by thread slug, storing
+>    each thread's last-seen `updatedAt` and exported filename. Since the
+>    library-listing GraphQL query already returns `updatedAt` per thread,
+>    conversations you've continued to update after their first export are
+>    now detected automatically and re-exported — without needing to open
+>    every thread just to check for changes.
+> 3. **Stale-file cleanup** (`src/exportLibrary.ts`) — when a previously
+>    exported thread is re-exported under a new timestamp, the old
+>    `.json`/`.md` pair is deleted automatically instead of accumulating
+>    duplicate copies of the same conversation.
+> 4. **Known limitation** — a small, consistent subset of threads may return
+>    HTTP 403 on a per-thread fetch while the library listing and every
+>    other thread succeed. Root cause not yet confirmed; suspected causes
+>    include archived/private threads or a stale per-thread access scope.
+>    These are safely skipped and retried on the next run without blocking
+>    the rest of the export.
 
 > **Fork notice (2026-05-03).** This fork brings the original
 > [`leonid-shevtsov/perplexport`](https://github.com/leonid-shevtsov/perplexport)
@@ -40,6 +73,10 @@ Your credentials and session are not stored, so from one side it's all secure, f
 
 I do not use the built-in export functionality (it's rate limited and the output is quite sparse), but render the conversation from its data. The data itself is stored as JSON and could be considered a complete backup of the conversation.
 
+## Prerequisites
+
+See [PREREQUISITES.md](./PREREQUISITES.md) for required software and a one-shot install script.
+
 ## Usage
 
 ```
@@ -63,22 +100,26 @@ The script will:
 5. Render conversation into Markdown
 6. Save the files in the specified output directory (defaults to `./conversations`)
 
+Conversations you've since updated in Perplexity will be automatically re-exported on your next run — the old `.json`/`.md` pair for that thread is replaced, not duplicated.
+
 ### Troubleshooting
 
 - If the browser doesn't open at all, or opens and closes instantly, try `npx puppeteer browsers install chrome`.
 - Puppeteer doesn't like to be ran from a global installation, so perhaps try cloning the project and running it this way.
+- A handful of threads may consistently fail with `HTTP 403` while everything else succeeds. This is a known limitation (see fork notice above) — they're skipped safely and retried on the next run.
 
 ## Development setup
 
 ```bash
-git clone https://github.com/osedlacek/perplexport.git
+git clone https://github.com/patk1002/perplexport.git
 cd perplexport
 npm install
 npm run build
-node dist/cli.js -e <your-email> -o ./conversations -d done.json
+node dist/cli.js -e <your-perplexity-email> -o ./conversations -d done.json
 ```
 
 ---
 
 Original (c) 2025 [Leonid Shevtsov](https://leonid.shevtsov.me) — MIT.
 Fork (c) 2026 Ondřej Sedláček — MIT.
+Fork (c) 2026 Pat Kelly — MIT.
