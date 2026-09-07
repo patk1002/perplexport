@@ -102,11 +102,16 @@ The script will:
 
 Conversations you've since updated in Perplexity will be automatically re-exported on your next run — the old `.json`/`.md` pair for that thread is replaced, not duplicated.
 
-### Troubleshooting
+## Troubleshooting
 
 - If the browser doesn't open at all, or opens and closes instantly, try `npx puppeteer browsers install chrome`.
 - Puppeteer doesn't like to be ran from a global installation, so perhaps try cloning the project and running it this way.
 - A handful of threads may consistently fail with `HTTP 403` while everything else succeeds. This is a known limitation (see fork notice above) — they're skipped safely and retried on the next run.
+
+## Architecture
+
+See [module-architecture.md](./module-architecture.md) for a diagram of
+how the CLI, exporter, saver, and rate-limit modules interact.
 
 ## Development setup
 
