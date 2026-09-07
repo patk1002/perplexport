@@ -56,10 +56,13 @@ export class ConversationSaver {
         const PAGE_DELAY_MS = 5_000;        // Wait 5 seconds after each successful page.
         const RATE_LIMIT_WAIT_MS = 60_000;  // Wait 60 seconds after HTTP 429.
         const RATE_LIMIT_RETRIES = 5;       // Retry a rate-limited page up to five times.
+        const MAX_PAGES = 2000;             // Safety cap: 2000 * 25 = 50,000 entries max.
         let offset = 0;
         let merged: ConversationResponse | null = null;
+        let hitSafetyCap = true;
         const blocksParam = blocks.map((b) => `supported_block_use_cases=${b}`).join("&");
-        for (let i = 0; i < 50; i++) {
+
+        for (let i = 0; i < MAX_PAGES; i++) {
           const u = `/rest/thread/${tid}?with_parent_info=true&with_schematized_response=true&version=2.18&source=default&limit=${PAGE_LIMIT}&offset=${offset}&from_first=true&${blocksParam}`;
           let resp: Response | undefined;
 
@@ -100,13 +103,27 @@ export class ConversationSaver {
             (merged as any).has_next_page = (data as any).has_next_page;
             (merged as any).next_cursor = (data as any).next_cursor;
           }
-          if (!(data as any).has_next_page) break;
-          if (entries.length === 0) break;
+          if (!(data as any).has_next_page) {
+            hitSafetyCap = false;
+            break;
+          }
+          if (entries.length === 0) {
+            hitSafetyCap = false;
+            break;
+          }
           offset += entries.length;
           await new Promise<void>((resolve) =>
             setTimeout(resolve, PAGE_DELAY_MS)
           );
         }
+
+        if (hitSafetyCap) {
+          console.error(
+            `  WARNING: thread ${tid} hit the pagination safety cap (${MAX_PAGES} pages) ` +
+            `— content may be truncated.`
+          );
+        }
+
         return { id: tid, conversation: merged as ConversationResponse };
       },
       threadId,

@@ -28,11 +28,23 @@ function formatLocalTimestamp(isoString: string, timeZone = "America/Chicago"): 
 }
 
 function buildFilename(threadData: any, fallbackId: string): string {
-  const entry = threadData.conversation?.entries?.[0];
-  const title: string = entry?.thread_title || fallbackId;
-  const updatedAt: string = entry?.entry_updated_datetime || "";
-  const timestamp = updatedAt
-    ? formatLocalTimestamp(updatedAt)
+  const entries = threadData.conversation?.entries || [];
+  const title: string = entries[0]?.thread_title || fallbackId;
+
+  let latestUpdatedAt = "";
+  let latestMs = -Infinity;
+  for (const e of entries) {
+    const t = e?.entry_updated_datetime;
+    if (!t) continue;
+    const ms = new Date(t).getTime();
+    if (!isNaN(ms) && ms > latestMs) {
+      latestMs = ms;
+      latestUpdatedAt = t;
+    }
+  }
+
+  const timestamp = latestUpdatedAt
+    ? formatLocalTimestamp(latestUpdatedAt)
     : formatLocalTimestamp(new Date().toISOString());
 
   const safeTitle = title

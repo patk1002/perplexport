@@ -92,18 +92,25 @@ export async function login(page: Page, email: string): Promise<void> {
   const timeoutMs = 5 * 60 * 1000;
   let userEmail: string | null = null;
   while (Date.now() - start < timeoutMs) {
-    const session = await page.evaluate(async () => {
-      try {
-        const r = await fetch("/api/auth/session", {
-          credentials: "include",
-          headers: { Accept: "application/json" },
-        });
-        if (!r.ok) return null;
-        return (await r.json()) as { user?: { email?: string } } | null;
-      } catch {
-        return null;
-      }
-    });
+    let session: { user?: { email?: string } } | null = null;
+    try {
+      session = await page.evaluate(async () => {
+        try {
+          const r = await fetch("/api/auth/session", {
+            credentials: "include",
+            headers: { Accept: "application/json" },
+          });
+          if (!r.ok) return null;
+          return (await r.json()) as { user?: { email?: string } } | null;
+        } catch {
+          return null;
+        }
+      });
+    } catch (err: any) {
+      const msg = err?.message || String(err);
+      console.log(`  (session check interrupted, retrying: ${msg.split("\n")[0]})`);
+      session = null;
+    }
     if (session && session.user && session.user.email) {
       userEmail = session.user.email;
       break;
