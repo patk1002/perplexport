@@ -23,7 +23,7 @@ const SUPPORTED_BLOCKS = [
 const UUID_RE = /\/search\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/i;
 
 const PAGE_LIMIT = 25;
-const PAGE_DELAY_MS = 5_000;        // Wait 5 seconds after each successful page.
+const PAGE_DELAY_MS = 2_000;        // Wait 2 seconds after each successful page.
 const RATE_LIMIT_WAIT_MS = 60_000;  // Wait 60 seconds after HTTP 429.
 const RATE_LIMIT_RETRIES = 5;       // Retry a rate-limited page up to five times.
 const MAX_PAGES = 2000;             // Safety cap: 2000 * 25 = 50,000 entries max.
@@ -142,6 +142,7 @@ export class ConversationSaver {
         break;
       }
       offset += entries.length;
+      console.log(`  ...page ${i + 1}: ${offset} entries fetched so far`);
       await sleep(PAGE_DELAY_MS);
     }
 

@@ -80,6 +80,7 @@ export default async function exportLibrary(options: ExportLibraryOptions) {
 
   try {
     let page: Page = await browser.newPage();
+    page.on("console", (msg) => console.log(`  [browser] ${msg.text()}`));
 
     await login(page, options.email);
     const conversations = await getConversations(page, doneFile);
@@ -96,6 +97,7 @@ export default async function exportLibrary(options: ExportLibraryOptions) {
       console.log(`  ↻ Recreating page (${reason})...`);
       try { await page.close(); } catch { /* already closed */ }
       page = await browser.newPage();
+      page.on("console", (msg) => console.log(`  [browser] ${msg.text()}`));
       conversationSaver = new ConversationSaver(page);
       await conversationSaver.initialize();
       try {
