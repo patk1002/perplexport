@@ -1,233 +1,158 @@
-import fs from "fs";
-import path from "path";
-import type { Page } from "puppeteer";
-import { withRateLimitRetry, RateLimitError, parseRetryAfter } from "./rateLimitStrategy";
 
-export const PAGE_LIMIT = 100;
-export const DEFER_AFTER_PAGES = 3; // 3 * PAGE_LIMIT = 300-entry quick-pass threshold
-const MAX_PAGES = 2000; // safety cap
-const BASE_PAGE_DELAY_MS = 2000;
-const PAGE_DELAY_DECAY = 0.85;
+import { Page } from "puppeteer";
+import { ConversationResponse } from "./types/conversation";
+import { sleep } from "./utils";
 
-export interface DoneFileEntry {
-  filename: string;
-  exportedAt: string;
+interface ThreadData {
+  id: string;
+  conversation: ConversationResponse;
 }
 
-export interface DoneFile {
-  processed: Record<string, DoneFileEntry>;
-}
+// Block use cases the Perplexity SPA requests when fetching a thread. Including
+// these makes the response shape identical to what renderConversation expects.
+const SUPPORTED_BLOCKS = [
+  "answer_modes", "media_items", "knowledge_cards", "inline_entity_cards", "place_widgets",
+  "finance_widgets", "prediction_market_widgets", "sports_widgets", "flight_status_widgets",
+  "news_widgets", "shopping_widgets", "jobs_widgets", "search_result_widgets", "inline_images",
+  "inline_assets", "placeholder_cards", "diff_blocks", "inline_knowledge_cards", "entity_group_v2",
+  "refinement_filters", "canvas_mode", "maps_preview", "answer_tabs", "price_comparison_widgets",
+  "preserve_latex", "generic_onboarding_widgets", "in_context_suggestions", "pending_followups",
+  "inline_claims", "unified_assets", "workflow_steps", "background_agents",
+];
 
-export interface PageFetchRecord {
-  slug: string;
-  pageIndex: number;
-  durationMs: number;
-}
+const UUID_RE = /\/search\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/i;
 
-export interface ThreadResult {
-  slug: string;
-  pageCount: number;
-  deferred: boolean;
-  failed: boolean;
-}
+const PAGE_LIMIT = 25;
+const PAGE_DELAY_MS = 2_000;        // Wait 2 seconds after each successful page.
+const RATE_LIMIT_WAIT_MS = 60_000;  // Wait 60 seconds after HTTP 429.
+const RATE_LIMIT_RETRIES = 5;       // Retry a rate-limited page up to five times.
+const MAX_PAGES = 2000;             // Safety cap: 2000 * 25 = 50,000 entries max.
+
+type PageFetchResult =
+  | { ok: true; data: ConversationResponse }
+  | { ok: false; status: number | string };
 
 export class ConversationSaver {
   private page: Page;
-  private outputDir: string;
-  private doneFilePath: string;
-  private verbose: boolean;
-  private stagingDir: string;
-  private doneFile: DoneFile;
-  public pageFetchRecords: PageFetchRecord[] = [];
-  public failedSlugs: string[] = [];
 
-  constructor(page: Page, outputDir: string, doneFilePath: string, verbose = false) {
+  constructor(page: Page) {
     this.page = page;
-    this.outputDir = outputDir;
-    this.doneFilePath = doneFilePath;
-    this.verbose = verbose;
-    this.stagingDir = path.join(outputDir, ".staging");
-    this.doneFile = this.loadDoneFile();
-
-    if (!fs.existsSync(this.stagingDir)) {
-      fs.mkdirSync(this.stagingDir, { recursive: true });
-    }
   }
 
-  private loadDoneFile(): DoneFile {
-    if (fs.existsSync(this.doneFilePath)) {
-      try {
-        return JSON.parse(fs.readFileSync(this.doneFilePath, "utf-8"));
-      } catch {
-        if (this.verbose) console.log("[verbose] done file unreadable, starting fresh");
-      }
-    }
-    return { processed: {} };
+  // Kept for API backwards-compat with the listener-based original. The new
+  // direct-fetch implementation needs no setup, but exportLibrary still calls it.
+  async initialize(): Promise<void> {
+    /* no-op */
   }
 
-  private saveDoneFile(): void {
-    fs.writeFileSync(this.doneFilePath, JSON.stringify(this.doneFile, null, 2));
-  }
-
-  private log(message: string): void {
-    if (this.verbose) console.log(`[verbose] ${message}`);
-  }
-
-  /** Estimates page count for a thread without deferring, used for the pass 1/2 split. */
-  async estimatePageCount(slug: string): Promise<number> {
-    const first = await this.fetchPage(slug, 0);
-    const totalEntries = first.total ?? first.entries.length;
-    return Math.max(1, Math.ceil(totalEntries / PAGE_LIMIT));
-  }
-
+  // Fetches a single page of a thread. This runs as its own short-lived
+  // page.evaluate() call — deliberately NOT looped inside the browser
+  // context — so that Puppeteer's protocolTimeout only ever has to cover
+  // one fetch (plus its own 429 retries), regardless of how many total
+  // pages a very long thread needs. A single evaluate() call that loops
+  // internally across hundreds of pages with multi-second delays can
+  // exceed protocolTimeout and die with "Runtime.callFunctionOn timed out"
+  // even though each individual fetch is fast.
   private async fetchPage(
-    slug: string,
-    pageIndex: number
-  ): Promise<{ entries: any[]; total?: number }> {
-    const start = Date.now();
+    tid: string,
+    offset: number
+  ): Promise<PageFetchResult> {
+    return await this.page.evaluate(
+      async (
+        threadId: string,
+        blocks: string[],
+        off: number,
+        limit: number,
+        rateLimitWaitMs: number,
+        rateLimitRetries: number
+      ): Promise<PageFetchResult> => {
+        const blocksParam = blocks.map((b) => `supported_block_use_cases=${b}`).join("&");
+        const u = `/rest/thread/${threadId}?with_parent_info=true&with_schematized_response=true&version=2.18&source=default&limit=${limit}&offset=${off}&from_first=true&${blocksParam}`;
 
-    const result = await withRateLimitRetry(
-      async () => {
-        return await this.page.evaluate(
-          async (threadSlug: string, offset: number, limit: number) => {
-            const res = await fetch(
-              `/rest/thread/${threadSlug}?offset=${offset}&limit=${limit}`,
-              { credentials: "include" }
-            );
-            if (res.status === 429) {
-              const retryAfter = res.headers.get("Retry-After");
-              throw { __rateLimited: true, retryAfter };
-            }
-            if (!res.ok) {
-              throw new Error(`Fetch failed: ${res.status}`);
-            }
-            return res.json();
-          },
-          slug,
-          pageIndex * PAGE_LIMIT,
-          PAGE_LIMIT
-        );
+        let resp: Response | undefined;
+        for (let attempt = 1; attempt <= rateLimitRetries; attempt++) {
+          resp = await fetch(u, {
+            credentials: "include",
+            headers: { Accept: "application/json" },
+          });
+          if (resp.status !== 429) break;
+          await new Promise<void>((resolve) => setTimeout(resolve, rateLimitWaitMs));
+        }
+
+        if (!resp || !resp.ok) {
+          return { ok: false, status: resp?.status ?? "unknown" };
+        }
+
+        const data = (await resp.json()) as ConversationResponse;
+        return { ok: true, data };
       },
-      { verbose: this.verbose, label: `${slug} page ${pageIndex}` }
-    ).catch((err) => {
-      if (err && err.__rateLimited) {
-        throw new RateLimitError("rate limited", parseRetryAfter(err.retryAfter));
-      }
-      throw err;
-    });
-
-    const durationMs = Date.now() - start;
-    this.pageFetchRecords.push({ slug, pageIndex, durationMs });
-    this.log(`fetched page ${pageIndex} for ${slug} in ${durationMs}ms`);
-
-    this.writeStagingPage(slug, pageIndex, result);
-    return result;
-  }
-
-  private stagingPathFor(slug: string, pageIndex: number): string {
-    return path.join(this.stagingDir, slug, `page-${pageIndex}.json`);
-  }
-
-  private writeStagingPage(slug: string, pageIndex: number, data: unknown): void {
-    const dir = path.join(this.stagingDir, slug);
-    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-    fs.writeFileSync(this.stagingPathFor(slug, pageIndex), JSON.stringify(data));
-  }
-
-  private loadStagedPages(slug: string): any[] {
-    const dir = path.join(this.stagingDir, slug);
-    if (!fs.existsSync(dir)) return [];
-    const files = fs
-      .readdirSync(dir)
-      .filter((f) => f.startsWith("page-"))
-      .sort((a, b) => {
-        const ai = parseInt(a.match(/\d+/)?.[0] ?? "0", 10);
-        const bi = parseInt(b.match(/\d+/)?.[0] ?? "0", 10);
-        return ai - bi;
-      });
-    return files.map((f) => JSON.parse(fs.readFileSync(path.join(dir, f), "utf-8")));
-  }
-
-  private clearStaging(slug: string): void {
-    const dir = path.join(this.stagingDir, slug);
-    if (fs.existsSync(dir)) fs.rmSync(dir, { recursive: true, force: true });
-  }
-
-  /** Deletes the previously exported .md/.json pair for a thread before writing a new one. */
-  private deleteStaleFiles(slug: string): void {
-    const prev = this.doneFile.processed[slug];
-    if (!prev) return;
-    for (const ext of [".md", ".json"]) {
-      const stalePath = path.join(this.outputDir, prev.filename.replace(/\.(md|json)$/, ext));
-      if (fs.existsSync(stalePath)) {
-        fs.rmSync(stalePath);
-        this.log(`deleted stale file ${stalePath}`);
-      }
-    }
-  }
-
-  async exportThread(slug: string): Promise<ThreadResult> {
-    let allEntries: any[] = [];
-    let pageIndex = 0;
-    let total: number | undefined;
-    let delay = BASE_PAGE_DELAY_MS;
-    let failed = false;
-
-    const staged = this.loadStagedPages(slug);
-    if (staged.length > 0) {
-      this.log(`resuming ${slug} from ${staged.length} staged page(s)`);
-      for (const p of staged) allEntries.push(...p.entries);
-      pageIndex = staged.length;
-      total = staged[staged.length - 1].total ?? total;
-    }
-
-    try {
-      while (pageIndex < MAX_PAGES) {
-        const result = await this.fetchPage(slug, pageIndex);
-        allEntries.push(...result.entries);
-        total = result.total ?? total;
-
-        const fetchedAll = total !== undefined && allEntries.length >= total;
-        const fetchedShortPage = result.entries.length < PAGE_LIMIT;
-        pageIndex++;
-
-        if (fetchedAll || fetchedShortPage) break;
-
-        await new Promise((r) => setTimeout(r, delay));
-        delay = Math.max(delay * PAGE_DELAY_DECAY, 250);
-      }
-    } catch (err) {
-      failed = true;
-      this.failedSlugs.push(slug);
-      this.log(`failed to export ${slug}: ${(err as Error).message}`);
-    }
-
-    if (!failed) {
-      this.deleteStaleFiles(slug);
-      const filename = this.writeOutput(slug, allEntries);
-      this.doneFile.processed[slug] = { filename, exportedAt: new Date().toISOString() };
-      this.saveDoneFile();
-      this.clearStaging(slug);
-    }
-
-    return { slug, pageCount: pageIndex, deferred: false, failed };
-  }
-
-  private writeOutput(slug: string, entries: any[]): string {
-    const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
-    const filename = `${slug}-${timestamp}.md`;
-    const markdown = entries
-      .map((e) => `## ${e.title ?? slug}\n\n${e.content ?? ""}`)
-      .join("\n\n---\n\n");
-    fs.writeFileSync(path.join(this.outputDir, filename), markdown);
-    fs.writeFileSync(
-      path.join(this.outputDir, filename.replace(/\.md$/, ".json")),
-      JSON.stringify(entries, null, 2)
+      tid,
+      SUPPORTED_BLOCKS,
+      offset,
+      PAGE_LIMIT,
+      RATE_LIMIT_WAIT_MS,
+      RATE_LIMIT_RETRIES
     );
-    return filename;
   }
 
-  isAlreadyDone(slug: string): boolean {
-    return Boolean(this.doneFile.processed[slug]);
+  // Direct fetch against /rest/thread/<uuid>, paginated via offset until
+  // has_next_page=false. Pagination and inter-page delay happen here in
+  // Node, not inside a single browser-context loop — see fetchPage() above
+  // for why that distinction matters for very long threads.
+  async loadThreadFromURL(url: string): Promise<ThreadData> {
+    const m = UUID_RE.exec(url);
+    if (!m) {
+      throw new Error(`Could not extract thread UUID from URL: ${url}`);
+    }
+    const threadId = m[1];
+
+    let offset = 0;
+    let merged: ConversationResponse | null = null;
+    let hitSafetyCap = true;
+
+    for (let i = 0; i < MAX_PAGES; i++) {
+      const result = await this.fetchPage(threadId, offset);
+
+      if (!result.ok) {
+        throw new Error(
+          `HTTP ${result.status} fetching thread ${threadId} (offset=${offset})`
+        );
+      }
+
+      const data = result.data;
+      const entries = (data as any).entries || [];
+
+      if (merged === null) {
+        merged = data;
+      } else {
+        (merged as any).entries = ((merged as any).entries || []).concat(entries);
+        (merged as any).background_entries = ((merged as any).background_entries || []).concat(
+          (data as any).background_entries || []
+        );
+        (merged as any).has_next_page = (data as any).has_next_page;
+        (merged as any).next_cursor = (data as any).next_cursor;
+      }
+
+      if (!(data as any).has_next_page) {
+        hitSafetyCap = false;
+        break;
+      }
+      if (entries.length === 0) {
+        hitSafetyCap = false;
+        break;
+      }
+      offset += entries.length;
+      console.log(`  ...page ${i + 1}: ${offset} entries fetched so far`);
+      await sleep(PAGE_DELAY_MS);
+    }
+
+    if (hitSafetyCap) {
+      console.error(
+        `  WARNING: thread ${threadId} hit the pagination safety cap (${MAX_PAGES} pages) ` +
+        `— content may be truncated.`
+      );
+    }
+
+    return { id: threadId, conversation: merged as ConversationResponse };
   }
 }
