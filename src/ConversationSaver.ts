@@ -85,6 +85,56 @@ interface StagedPage {
 }
 
 /**
+ * Writes a JSON file shaped like `{ status, entries: [...], background_entries:
+ * [...], has_next_page, next_cursor }` WITHOUT ever calling
+ * JSON.stringify() on the whole object. V8 caps any single string at
+ * 0x1fffffe8 characters (~536.8 million) -- a hard engine limit, not a
+ * configurable one. A single very large thread's pretty-printed JSON can
+ * exceed that (confirmed live: a ~34,500+ entry thread crashed
+ * finalizeThread() with "Cannot create a string longer than
+ * 0x1fffffe8 characters" the instant JSON.stringify(merged, null, 2) tried
+ * to materialize the whole thing as one string). Streaming avoids this
+ * entirely: each write() call only ever serializes ONE entry at a time, so
+ * no single string involved is anywhere near the limit regardless of how
+ * many entries the thread has in total.
+ *
+ * `backgroundEntries` is written with a single JSON.stringify() call
+ * rather than streamed -- based on every thread observed so far this array
+ * is empty or small, nowhere near large enough to risk the same limit. If
+ * a future thread ever proves that assumption wrong, this would need the
+ * same per-item streaming treatment as `entries`.
+ */
+function writeJsonStreaming(
+  filePath: string,
+  merged: { status: string; entries: ConversationEntry[]; backgroundEntries: unknown[]; hasNextPage: boolean; nextCursor: null }
+): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const stream = fs.createWriteStream(filePath);
+    stream.on("error", reject);
+    stream.on("finish", resolve);
+
+    stream.write("{\n");
+    stream.write(`  "status": ${JSON.stringify(merged.status)},\n`);
+    stream.write(`  "has_next_page": ${JSON.stringify(merged.hasNextPage)},\n`);
+    stream.write(`  "next_cursor": ${JSON.stringify(merged.nextCursor)},\n`);
+    stream.write(`  "background_entries": ${JSON.stringify(merged.backgroundEntries)},\n`);
+    stream.write('  "entries": [\n');
+
+    const lastIndex = merged.entries.length - 1;
+    merged.entries.forEach((entry, i) => {
+      const indented = JSON.stringify(entry, null, 2)
+        .split("\n")
+        .map((line) => `    ${line}`)
+        .join("\n");
+      stream.write(indented + (i === lastIndex ? "\n" : ",\n"));
+    });
+
+    stream.write("  ]\n}\n");
+    stream.end();
+  });
+}
+
+/**
  * Per-thread fetch engine. Exposes resumable primitives (startThread /
  * fetchNextPage / finalizeThread) so the caller (exportLibrary.ts) can pause
  * a thread after a bounded number of pages -- for the quick-pass/deferred-
@@ -342,11 +392,24 @@ export class ConversationSaver {
    * Deliberately writes the NEW files before deleting the OLD stale ones
    * (reordered from an earlier version that deleted first): if a write
    * fails partway -- disk full, permissions, anything -- the old pair
-   * stays intact instead of being deleted with nothing to replace it. */
+   * stays intact instead of being deleted with nothing to replace it.
+   *
+   * The .json write is streamed entry-by-entry (see writeJsonStreaming)
+   * rather than built as one JSON.stringify() string -- confirmed live
+   * that a large-enough thread's pretty-printed JSON exceeds V8's
+   * 0x1fffffe8-character string limit if materialized all at once. */
   async finalizeThread(state: ThreadFetchState): Promise<ThreadResult> {
     const { slug } = state.conversation;
 
     const filename = buildFilename(state.entries, slug);
+
+    await writeJsonStreaming(path.join(this.outputDir, `${filename}.json`), {
+      status: state.status,
+      entries: state.entries,
+      backgroundEntries: state.backgroundEntries,
+      hasNextPage: false,
+      nextCursor: null,
+    });
 
     const merged: RawPageResponse = {
       status: state.status,
@@ -355,8 +418,6 @@ export class ConversationSaver {
       has_next_page: false,
       next_cursor: null,
     };
-
-    fs.writeFileSync(path.join(this.outputDir, `${filename}.json`), JSON.stringify(merged, null, 2));
 
     let markdown: string;
     try {
