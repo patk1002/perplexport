@@ -1,3 +1,4 @@
+import path from "path";
 import { promises as fs } from "fs";
 import { DoneFile, DurationStats, PageFetchRecord, RunStats, TierUsage } from "./types";
 
@@ -115,11 +116,22 @@ export function buildRunStats(
   };
 }
 
-/** Writes a uniquely-timestamped stats file so a run never overwrites a
- * prior run's summary, e.g. `done.json.stats-quick-20260908101500.json`. */
-export async function writeRunStats(doneFilePath: string, stats: RunStats): Promise<void> {
+/** Writes a uniquely-timestamped stats file to `<outputDir>/stat-files/`
+ * (created if needed) so a run never overwrites a prior run's summary, and
+ * so these diagnostic files live alongside the export output rather than
+ * cluttering the project root next to done.json -- as a side benefit, this
+ * also means they're automatically covered by any .gitignore rule that
+ * already excludes outputDir, with no separate pattern needed. Named after
+ * doneFilePath's own basename to keep the existing naming convention, e.g.
+ * `my-export/stat-files/done.json.stats-quick-20260908101500.json`. */
+export async function writeRunStats(outputDir: string, doneFilePath: string, stats: RunStats): Promise<void> {
+  const statsDir = path.join(outputDir, "stat-files");
+  await fs.mkdir(statsDir, { recursive: true });
+
   const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
-  const statsPath = `${doneFilePath}.stats-${stats.pass}-${timestamp}.json`;
+  const doneFileBasename = path.basename(doneFilePath);
+  const statsPath = path.join(statsDir, `${doneFileBasename}.stats-${stats.pass}-${timestamp}.json`);
+
   await fs.writeFile(statsPath, JSON.stringify(stats, null, 2));
   console.log(`  Wrote ${stats.pass}-pass stats to ${statsPath}`);
 }

@@ -15,13 +15,15 @@
  *      ratelimit-headers) or the legacy X-RateLimit-Remaining / X-RateLimit-
  *      Reset -- if present, proactively throttle from remaining quota
  *      BEFORE a 429 ever happens.
- *   2. Retry-After on an actual 429/503 -- authoritative and reactive; use
- *      it exactly as the server specifies.
- *   3. AIMD-style fallback -- used only when neither header is present.
- *      Combines an adaptive baseline delay (jumps to a proven-necessary
- *      wait the instant throttling is observed, decays gently on clean
- *      responses) with a fixed 30/60/120/240/300/300/300s schedule as a
- *      hard backstop for the retry-count itself.
+ *   2. Retry-After on an actual 429/502/503/504 -- authoritative and
+ *      reactive; use it exactly as the server specifies.
+ *   3. AIMD-style fallback -- used when neither header is present, OR when
+ *      the raw fetch itself threw (network error, DNS failure, connection
+ *      reset) rather than returning any HTTP response at all. Combines an
+ *      adaptive baseline delay (jumps to a proven-necessary wait the
+ *      instant throttling is observed, decays gently on clean responses)
+ *      with a fixed 30/60/120/240/300/300/300s schedule as a hard backstop
+ *      for the retry-count itself.
  */
 
 // ---------------------------------------------------------------------------
@@ -29,7 +31,8 @@
 // ---------------------------------------------------------------------------
 
 /** Default number of retry attempts permitted after the first attempt fails
- * with a 429/503. Callers may override per-call via TieredRetryContext.maxRetries. */
+ * with a retryable status (or throws). Callers may override per-call via
+ * TieredRetryContext.maxRetries. */
 export const RATE_LIMIT_RETRIES = 7;
 
 /** Fixed exponential-with-cap schedule, indexed by attempt (1-indexed). */
@@ -38,6 +41,18 @@ export const RATE_LIMIT_SCHEDULE_MS = [
 ] as const;
 
 export const RATE_LIMIT_MAX_WAIT_MS = 300_000;
+
+/**
+ * Status codes treated as transient and worth retrying: 429 (rate limited),
+ * 502/504 (gateway hiccups), 503 (service unavailable). Deliberately does
+ * NOT include 500 -- a generic server error is more often a genuine
+ * application-level bug than a transient blip, and blanket-retrying it
+ * risks masking real problems instead of recovering from a real hiccup.
+ * Added 502/504 after a live 114-minute run on a ~34,500-entry thread was
+ * aborted by a single HTTP 504 on page 346 -- previously only 429/503 were
+ * retried, so one transient gateway timeout killed an otherwise-healthy run.
+ */
+const RETRYABLE_STATUSES = new Set([429, 502, 503, 504]);
 
 /** Below this, an adaptive baseline delay is treated as "no meaningful wait." */
 const ADAPTIVE_FLOOR_MS = 250;
@@ -66,12 +81,21 @@ export interface ThrottleDecision {
 }
 
 export class RateLimitError extends Error {
-  constructor(
-    message: string,
-    public readonly retryAfterMs: number | null = null,
-  ) {
+  constructor(message: string, public readonly retryAfterMs: number | null = null) {
     super(message);
     this.name = "RateLimitError";
+  }
+}
+
+/** Thrown for a non-retryable HTTP status (anything not in
+ * RETRYABLE_STATUSES). Carries the status code as structured data so
+ * callers (e.g. exportLibrary.ts's failure logging) can special-case
+ * specific codes -- 401/403 in particular -- without fragile string
+ * matching against the error message. */
+export class HttpStatusError extends Error {
+  constructor(message: string, public readonly status: number) {
+    super(message);
+    this.name = "HttpStatusError";
   }
 }
 
@@ -87,10 +111,7 @@ function toNumber(value: string | null | undefined): number | null {
 
 /** Case-insensitive header lookup over a plain object (headers cross the
  * Puppeteer boundary as a plain object, not a real `Headers` instance). */
-function getHeader(
-  headers: Record<string, string>,
-  name: string,
-): string | null {
+function getHeader(headers: Record<string, string>, name: string): string | null {
   const lower = name.toLowerCase();
   for (const key of Object.keys(headers)) {
     if (key.toLowerCase() === lower) return headers[key];
@@ -103,9 +124,7 @@ function getHeader(
  * integer) or an HTTP-date. Returns milliseconds to wait, or null if the
  * header is absent/unparseable.
  */
-export function parseRetryAfter(
-  headerValue: string | null | undefined,
-): number | null {
+export function parseRetryAfter(headerValue: string | null | undefined): number | null {
   if (!headerValue) return null;
   const asSeconds = toNumber(headerValue);
   if (asSeconds !== null) return Math.max(0, asSeconds * 1000);
@@ -127,7 +146,7 @@ export function parseRetryAfter(
  * Perplexity's internal, unpublished endpoint.
  */
 export function parseQuotaHeaders(
-  headers: Record<string, string>,
+  headers: Record<string, string>
 ): { remaining: number; resetMs: number } | null {
   const remaining =
     toNumber(getHeader(headers, "RateLimit-Remaining")) ??
@@ -175,7 +194,7 @@ export class AdaptiveDelay {
     return this.currentMs;
   }
 
-  /** Call when a response indicates throttling (a 429/503, or a low-quota tier-1 signal). */
+  /** Call when a response indicates throttling (a retryable status, or a low-quota tier-1 signal). */
   registerThrottle(provenWaitMs: number): void {
     this.currentMs = Math.max(this.currentMs, provenWaitMs);
   }
@@ -201,41 +220,27 @@ export class AdaptiveDelay {
 export function decideThrottle(
   signal: { status: number; headers: Record<string, string> },
   attempt: number,
-  adaptive: AdaptiveDelay,
+  adaptive: AdaptiveDelay
 ): ThrottleDecision {
   const quota = parseQuotaHeaders(signal.headers);
-  const isThrottled = signal.status === 429 || signal.status === 503;
+  const isThrottled = RETRYABLE_STATUSES.has(signal.status);
 
   // Tier 1: proactive quota headers, checked regardless of status code.
   if (quota && quota.remaining <= 1) {
     adaptive.registerThrottle(quota.resetMs);
-    return {
-      tier: "quota-header",
-      waitMs: quota.resetMs,
-      detail: `remaining=${quota.remaining}`,
-    };
+    return { tier: "quota-header", waitMs: quota.resetMs, detail: `remaining=${quota.remaining}` };
   }
 
   if (!isThrottled) {
     adaptive.registerSuccess();
-    return {
-      tier: "aimd",
-      waitMs: adaptive.value,
-      detail: "clean response, decaying baseline",
-    };
+    return { tier: "aimd", waitMs: adaptive.value, detail: "clean response, decaying baseline" };
   }
 
-  // Tier 2: authoritative Retry-After on an actual 429/503.
-  const retryAfterMs = parseRetryAfter(
-    getHeader(signal.headers, "Retry-After"),
-  );
+  // Tier 2: authoritative Retry-After on an actual retryable status.
+  const retryAfterMs = parseRetryAfter(getHeader(signal.headers, "Retry-After"));
   if (retryAfterMs !== null) {
     adaptive.registerThrottle(retryAfterMs);
-    return {
-      tier: "retry-after",
-      waitMs: retryAfterMs,
-      detail: "server Retry-After header",
-    };
+    return { tier: "retry-after", waitMs: retryAfterMs, detail: `server Retry-After header (status ${signal.status})` };
   }
 
   // Tier 3: neither header present -- fixed schedule, floored by the
@@ -245,7 +250,7 @@ export function decideThrottle(
   return {
     tier: "aimd",
     waitMs: Math.max(scheduled, adaptive.value),
-    detail: `attempt ${attempt}, no rate-limit headers present`,
+    detail: `attempt ${attempt}, status ${signal.status}, no rate-limit headers present`,
   };
 }
 
@@ -286,46 +291,67 @@ export interface TieredRetryResult<T> {
  * `rawFetch`, no single external call (Puppeteer's protocolTimeout, an HTTP
  * client timeout, a DB driver timeout) ever has to contain the full retry
  * loop -- the loop and all its waits live here in plain TypeScript.
+ *
+ * If `rawFetch` itself throws (a network error, DNS failure, connection
+ * reset -- no HTTP response was ever received at all, so there's no status
+ * code or headers to make a tiered decision from) that's also retried, via
+ * the tier-3 fixed schedule directly, up to the same maxRetries budget.
+ * Previously only HTTP-status-based failures were retried; a raw
+ * connection-level exception aborted the whole attempt immediately with
+ * zero retries, even though a transient network blip is at least as
+ * plausible as a gateway error.
  */
 export async function fetchWithTieredRetry<T>(
   rawFetch: () => Promise<RawFetchResult>,
   parseBody: (bodyText: string) => T,
-  ctx: TieredRetryContext,
+  ctx: TieredRetryContext
 ): Promise<TieredRetryResult<T>> {
   const { verbose = false, label = "request" } = ctx;
   const maxRetries = ctx.maxRetries ?? RATE_LIMIT_RETRIES;
   const doSleep = ctx.sleepFn ?? sleep;
 
   for (let attempt = 1; attempt <= maxRetries + 1; attempt++) {
-    const result = await rawFetch();
+    let result: RawFetchResult;
+    try {
+      result = await rawFetch();
+    } catch (err) {
+      if (attempt > maxRetries) {
+        throw new RateLimitError(
+          `Exhausted ${maxRetries} retries (raw fetch kept throwing: ${(err as Error).message}) for ${label}`
+        );
+      }
+      const waitMs = Math.max(computeExponentialWaitMs(attempt), ctx.adaptive.value);
+      ctx.adaptive.registerThrottle(waitMs);
+      if (verbose) {
+        console.log(
+          `[verbose] ${label}: raw fetch threw (attempt ${attempt}/${maxRetries}): ${(err as Error).message}, ` +
+            `waiting ${Math.round(waitMs / 1000)}s`
+        );
+      }
+      await doSleep(waitMs);
+      continue;
+    }
 
     if (result.status >= 200 && result.status < 300) {
       const decision = decideThrottle(result, attempt, ctx.adaptive);
       if (verbose) {
         console.log(
-          `[verbose] ${label}: ok (tier=${decision.tier}, next delay ${Math.round(decision.waitMs / 1000)}s -- ${decision.detail})`,
+          `[verbose] ${label}: ok (tier=${decision.tier}, next delay ${Math.round(decision.waitMs / 1000)}s -- ${decision.detail})`
         );
       }
       if (decision.waitMs > 0) await doSleep(decision.waitMs);
-      return {
-        data: parseBody(result.bodyText),
-        waitedMs: decision.waitMs,
-        attempts: attempt,
-        tier: decision.tier,
-      };
+      return { data: parseBody(result.bodyText), waitedMs: decision.waitMs, attempts: attempt, tier: decision.tier };
     }
 
-    if (result.status === 429 || result.status === 503) {
+    if (RETRYABLE_STATUSES.has(result.status)) {
       if (attempt > maxRetries) {
-        throw new RateLimitError(
-          `Exhausted ${maxRetries} retries (last status ${result.status}) for ${label}`,
-        );
+        throw new RateLimitError(`Exhausted ${maxRetries} retries (last status ${result.status}) for ${label}`);
       }
       const decision = decideThrottle(result, attempt, ctx.adaptive);
       if (verbose) {
         console.log(
           `[verbose] ${label}: rate limited (attempt ${attempt}/${maxRetries}, tier=${decision.tier}), ` +
-            `waiting ${Math.round(decision.waitMs / 1000)}s -- ${decision.detail}`,
+            `waiting ${Math.round(decision.waitMs / 1000)}s -- ${decision.detail}`
         );
       }
       await doSleep(decision.waitMs);
@@ -333,7 +359,7 @@ export async function fetchWithTieredRetry<T>(
     }
 
     // Any other non-2xx status is not retryable by this module.
-    throw new Error(`Request failed: HTTP ${result.status} for ${label}`);
+    throw new HttpStatusError(`Request failed: HTTP ${result.status} for ${label}`, result.status);
   }
 
   throw new RateLimitError(`Exhausted retries for ${label}`, null);

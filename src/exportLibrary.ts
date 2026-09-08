@@ -5,6 +5,7 @@ import StealthPlugin from "puppeteer-extra-plugin-stealth";
 import { ConversationSaver, ThreadFetchState } from "./ConversationSaver";
 import { getConversations } from "./listConversations";
 import { login } from "./login";
+import { HttpStatusError } from "./rateLimitStrategy";
 import { buildRunStats, formatDuration, getLatestEntryUpdatedAt, sleep, THREAD_UUID_RE, writeRunStats } from "./utils";
 import { Conversation, ExportLibraryOptions } from "./types";
 
@@ -19,6 +20,36 @@ function isFrameError(message: string): boolean {
     message.includes("Protocol error") ||
     message.includes("Runtime.callFunctionOn timed out")
   );
+}
+
+/** Logs a failure alongside an explicit reminder that progress is not
+ * lost -- every successfully-fetched page for this thread is already on
+ * disk in its JSONL staging file, and rerunning the same command resumes
+ * from there instead of starting over. Added after a live 114-minute run
+ * on a ~34,500-entry thread was aborted by a single HTTP 504, which (before
+ * this) just logged a bare error with no indication that nothing had
+ * actually been lost.
+ *
+ * A 401/403 gets an additional, more specific hint: unlike a transient
+ * gateway error, an auth failure might mean the session genuinely expired
+ * mid-run, in which case simply rerunning (without a fresh login) won't
+ * help. Phrased as a possibility, not a certainty -- it could still just be
+ * a one-off blip on an otherwise-valid session, in which case rerunning
+ * resumes normally. */
+function logFailureWithResumeHint(url: string, slug: string, outputDir: string, err: unknown): void {
+  const message = (err as Error).message ?? String(err);
+  console.error(`  FAILED ${url}: ${message}`);
+  console.error(
+    `  Progress is not lost: every page fetched so far is saved in ` +
+      `${outputDir}/.staging/${slug}.partial.jsonl -- rerun the same command to resume from where this left off.`
+  );
+  if (err instanceof HttpStatusError && (err.status === 401 || err.status === 403)) {
+    console.error(
+      `  Note: HTTP ${err.status} can mean your login session expired partway through this run. ` +
+        `If rerunning hits the same error immediately, a fresh login (simply running the command again, ` +
+        `since login always re-runs at the start) should resolve it -- if not, this may need a closer look.`
+    );
+  }
 }
 
 export default async function exportLibrary(options: ExportLibraryOptions): Promise<void> {
@@ -133,12 +164,12 @@ export default async function exportLibrary(options: ExportLibraryOptions): Prom
         await saver.finalizeThread(state);
         processed = 1;
       } catch (err) {
-        console.error(`  FAILED ${options.url}: ${(err as Error).message}`);
+        logFailureWithResumeHint(options.url, slug, options.outputDir, err);
         saver.failedSlugs.push(slug);
       }
 
       const stats = buildRunStats("single", passStart, saver.pageFetchRecords, saver.failedSlugs, saver.safetyCapSlugs, processed, 0);
-      await writeRunStats(options.doneFilePath, stats);
+      await writeRunStats(options.outputDir, options.doneFilePath, stats);
       await browser.close();
       console.log(`Done. Single-URL run finished in ${formatDuration(Date.now() - runStart)}.`);
       return;
@@ -176,7 +207,7 @@ export default async function exportLibrary(options: ExportLibraryOptions): Prom
           deferred.push(state);
         }
       } catch (err) {
-        console.error(`  FAILED ${conversation.url}: ${(err as Error).message}`);
+        logFailureWithResumeHint(conversation.url, conversation.slug, options.outputDir, err);
         saver.failedSlugs.push(conversation.slug);
       }
 
@@ -187,7 +218,7 @@ export default async function exportLibrary(options: ExportLibraryOptions): Prom
     }
 
     const quickStats = buildRunStats("quick", quickStart, saver.pageFetchRecords, saver.failedSlugs, saver.safetyCapSlugs, quickProcessed, deferred.length);
-    await writeRunStats(options.doneFilePath, quickStats);
+    await writeRunStats(options.outputDir, options.doneFilePath, quickStats);
     console.log(`Pass 1 (quick) done: ${quickProcessed} exported, ${deferred.length} deferred, ${saver.failedSlugs.length} failed so far.`);
 
     // Pass 2 ("deferred"): resume every parked thread to completion. Nothing
@@ -207,7 +238,7 @@ export default async function exportLibrary(options: ExportLibraryOptions): Prom
         deferredProcessed += 1;
         successSinceRefresh += 1;
       } catch (err) {
-        console.error(`  FAILED (deferred) ${state.conversation.url}: ${(err as Error).message}`);
+        logFailureWithResumeHint(state.conversation.url, state.conversation.slug, options.outputDir, err);
         saver.failedSlugs.push(state.conversation.slug);
       }
 
@@ -225,7 +256,7 @@ export default async function exportLibrary(options: ExportLibraryOptions): Prom
       deferredProcessed,
       0
     );
-    await writeRunStats(options.doneFilePath, deferredStats);
+    await writeRunStats(options.outputDir, options.doneFilePath, deferredStats);
 
     console.log(
       `Done in ${formatDuration(Date.now() - runStart)}. ` +
