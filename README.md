@@ -1,5 +1,30 @@
 # Perplexity Conversation Exporter (patk1002 fork)
 
+> **Fork notice (2026-09-08).** Rate-limit and large-thread reliability pass.
+>
+> **What changed:**
+>
+> 1. **Three-tier rate limiting** (`src/rateLimitStrategy.ts`, new) — checks
+>    `RateLimit-Remaining`/`RateLimit-Reset` (or legacy `X-RateLimit-*`)
+>    proactively, then an actual `Retry-After` header, falling back to an
+>    adaptive AIMD-style delay plus a fixed 30/60/120/240/300/300/300s
+>    schedule only when neither header is present. Framework-agnostic and
+>    reusable in other projects.
+> 2. **PAGE_LIMIT 25 → 100** (default; overridable via `--page-limit`) —
+>    fewer round trips per thread means fewer opportunities to hit a 429,
+>    which was the actual root cause of large-thread failures.
+> 3. **Crash-resilient staging** — each page's entries are appended to
+>    `<outputDir>/.staging/<slug>.partial.jsonl` as they arrive, so an
+>    interrupted run resumes from the last complete page instead of
+>    refetching a thread from scratch.
+> 4. **Quick/deferred pass scheduling** — a thread still fetching after
+>    `--defer-after-pages` (default 3) pages is parked and resumed in a
+>    second pass, so a handful of very large threads can't block many
+>    small ones from finishing.
+> 5. **New flags**: `-v/--verbose` (opt-in detailed logging), `-u/--url`
+>    (process one thread, skipping the full library scan), `--page-limit`,
+>    `--defer-after-pages`, `--rate-limit-retries`.
+
 > **Fork notice (2026-09-05).** This fork builds on
 > [`osedlacek/perplexport`](https://github.com/osedlacek/perplexport) (itself
 > a fork of the original [`leonid-shevtsov/perplexport`](https://github.com/leonid-shevtsov/perplexport)),
@@ -89,6 +114,11 @@ Options:
   -d, --done-file <file>    Done file location (tracks which URLs have been downloaded before) (default: "done.json")
   -e, --email <email>       Perplexity email
   -h, --help                display help for command
+  -v/--verbose              opt-in detailed logging,
+  -u/--url`                 process one thread, skipping the full library scan,
+  --page-limit,
+  --defer-after-pages,
+  --rate-limit-retries
 ```
 
 The script will:

@@ -3,6 +3,7 @@ export interface ConversationResponse {
   entries: ConversationEntry[];
   has_next_page: boolean;
   next_cursor: string | null;
+  background_entries?: unknown[];
 }
 
 export interface ConversationEntry {

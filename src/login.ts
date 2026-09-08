@@ -39,7 +39,7 @@ export async function login(page: Page, email: string): Promise<void> {
     }
   }
 
-    // Sidebar is collapsed by default; the sign-in trigger likely lives inside it.
+  // Sidebar is collapsed by default; the sign-in trigger likely lives inside it.
   try {
     await page.waitForSelector('button[aria-label="Open sidebar"]', { timeout: 5000 });
     await page.click('button[aria-label="Open sidebar"]');
@@ -49,9 +49,6 @@ export async function login(page: Page, email: string): Promise<void> {
     console.log("Sidebar toggle not found or already open");
   }
 
-  // DEBUG: see what's available now that sidebar (should be) open
-  await page.screenshot({ path: "/home/patk1/debug2.png" });
-  
   // Email input
   await page.waitForSelector('input[type="email"]', { timeout: 30000 });
   await page.type('input[type="email"]', email);
