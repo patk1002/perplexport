@@ -23,5 +23,5 @@ module.exports = tseslint.config(
       "@typescript-eslint/no-explicit-any": "warn",
     },
   },
-  eslintConfigPrettier
+  eslintConfigPrettier,
 );

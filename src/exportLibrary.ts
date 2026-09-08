@@ -25,6 +25,13 @@ export default async function exportLibrary(options: ExportLibraryOptions): Prom
   const runStart = Date.now();
   console.log(`Run started at ${new Date(runStart).toISOString()}`);
 
+  // Must be registered BEFORE puppeteer.launch() -- puppeteer-extra installs
+  // a plugin's evasions onto the launch/page-creation hooks at launch time,
+  // so calling .use() after a browser is already running silently disables
+  // every stealth patch for that browser's pages (this was a real bug in an
+  // earlier draft of this file: StealthPlugin() was registered after launch).
+  puppeteer.use(StealthPlugin());
+
   await fs.promises.mkdir(options.outputDir, { recursive: true });
 
   const browser: Browser = await puppeteer.launch({
@@ -35,13 +42,12 @@ export default async function exportLibrary(options: ExportLibraryOptions): Prom
   });
 
   try {
-    puppeteer.use(StealthPlugin());
     let page: Page = await browser.newPage();
     if (options.verbose) {
       page.on("console", (msg) => console.log(`  [browser] ${msg.text()}`));
     }
 
-    await login(page, options.email);
+    await login(page, options.email, { verbose: options.verbose, screenshotDir: options.outputDir });
 
     const saver = new ConversationSaver(page, {
       outputDir: options.outputDir,

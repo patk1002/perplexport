@@ -7,6 +7,12 @@
  * rateLimitStrategy.ts is the one module with zero Puppeteer/filesystem
  * dependencies, making it the cheapest and highest-value thing to actually
  * test before leaning on it in other projects (e.g. LIMIT).
+ *
+ * The fetchWithTieredRetry tests inject an instant no-op via
+ * TieredRetryContext.sleepFn -- without it, these tests would sleep for the
+ * REAL 30s/60s/... backoff schedule (minutes of real wall-clock time per
+ * test), since that schedule is correctly evidence-tuned for production,
+ * not for a fast test suite.
  */
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -20,6 +26,10 @@ import {
   RateLimitError,
   RATE_LIMIT_SCHEDULE_MS,
 } from "./rateLimitStrategy";
+
+const instantSleep = async (_ms: number): Promise<void> => {
+  /* no-op: skips the real wait so retry-loop tests run in milliseconds */
+};
 
 test("parseRetryAfter: delay-seconds form", () => {
   assert.equal(parseRetryAfter("30"), 30_000);
@@ -126,7 +136,7 @@ test("fetchWithTieredRetry: retries through 429s with no headers, then succeeds"
       return { status: 200, headers: {}, bodyText: JSON.stringify({ ok: true }) };
     },
     (bodyText) => JSON.parse(bodyText) as { ok: boolean },
-    { adaptive: new AdaptiveDelay(), maxRetries: 3 }
+    { adaptive: new AdaptiveDelay(), maxRetries: 3, sleepFn: instantSleep }
   );
 
   assert.equal(calls, 3);
@@ -140,7 +150,7 @@ test("fetchWithTieredRetry: throws RateLimitError once maxRetries is exhausted",
       fetchWithTieredRetry(
         async () => ({ status: 429, headers: {}, bodyText: "" }),
         (bodyText) => bodyText,
-        { adaptive: new AdaptiveDelay(), maxRetries: 2 }
+        { adaptive: new AdaptiveDelay(), maxRetries: 2, sleepFn: instantSleep }
       ),
     RateLimitError
   );
@@ -152,7 +162,7 @@ test("fetchWithTieredRetry: a non-retryable status throws immediately, not a Rat
       fetchWithTieredRetry(
         async () => ({ status: 500, headers: {}, bodyText: "" }),
         (bodyText) => bodyText,
-        { adaptive: new AdaptiveDelay(), maxRetries: 3 }
+        { adaptive: new AdaptiveDelay(), maxRetries: 3, sleepFn: instantSleep }
       ),
     (err: unknown) => err instanceof Error && !(err instanceof RateLimitError)
   );

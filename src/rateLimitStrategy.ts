@@ -242,6 +242,11 @@ export interface TieredRetryContext {
   /** Overrides RATE_LIMIT_RETRIES for this call. Useful for a CLI-exposed
    * --rate-limit-retries flag without changing this module's own default. */
   maxRetries?: number;
+  /** Testability seam only -- defaults to the real setTimeout-based sleep.
+   * Unit tests inject an instant resolver here to avoid real-time waits on
+   * the (correctly) minutes-long production backoff schedule; production
+   * callers should never set this. */
+  sleepFn?: (ms: number) => Promise<void>;
 }
 
 export interface TieredRetryResult<T> {
@@ -267,6 +272,7 @@ export async function fetchWithTieredRetry<T>(
 ): Promise<TieredRetryResult<T>> {
   const { verbose = false, label = "request" } = ctx;
   const maxRetries = ctx.maxRetries ?? RATE_LIMIT_RETRIES;
+  const doSleep = ctx.sleepFn ?? sleep;
 
   for (let attempt = 1; attempt <= maxRetries + 1; attempt++) {
     const result = await rawFetch();
@@ -278,7 +284,7 @@ export async function fetchWithTieredRetry<T>(
           `[verbose] ${label}: ok (tier=${decision.tier}, next delay ${Math.round(decision.waitMs / 1000)}s -- ${decision.detail})`
         );
       }
-      if (decision.waitMs > 0) await sleep(decision.waitMs);
+      if (decision.waitMs > 0) await doSleep(decision.waitMs);
       return { data: parseBody(result.bodyText), waitedMs: decision.waitMs, attempts: attempt, tier: decision.tier };
     }
 
@@ -293,7 +299,7 @@ export async function fetchWithTieredRetry<T>(
             `waiting ${Math.round(decision.waitMs / 1000)}s -- ${decision.detail}`
         );
       }
-      await sleep(decision.waitMs);
+      await doSleep(decision.waitMs);
       continue;
     }
 
