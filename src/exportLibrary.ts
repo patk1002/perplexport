@@ -5,7 +5,13 @@ import StealthPlugin from "puppeteer-extra-plugin-stealth";
 import { ConversationSaver, ThreadFetchState } from "./ConversationSaver";
 import { getConversations } from "./listConversations";
 import { login } from "./login";
-import { buildRunStats, formatDuration, sleep, THREAD_UUID_RE, writeRunStats } from "./utils";
+import {
+  buildRunStats,
+  formatDuration,
+  sleep,
+  THREAD_UUID_RE,
+  writeRunStats,
+} from "./utils";
 import { Conversation, ExportLibraryOptions } from "./types";
 
 /** Errors that mean the Puppeteer page/frame/session died and needs
@@ -21,7 +27,9 @@ function isFrameError(message: string): boolean {
   );
 }
 
-export default async function exportLibrary(options: ExportLibraryOptions): Promise<void> {
+export default async function exportLibrary(
+  options: ExportLibraryOptions,
+): Promise<void> {
   const runStart = Date.now();
   console.log(`Run started at ${new Date(runStart).toISOString()}`);
 
@@ -47,7 +55,10 @@ export default async function exportLibrary(options: ExportLibraryOptions): Prom
       page.on("console", (msg) => console.log(`  [browser] ${msg.text()}`));
     }
 
-    await login(page, options.email, { verbose: options.verbose, screenshotDir: options.outputDir });
+    await login(page, options.email, {
+      verbose: options.verbose,
+      screenshotDir: options.outputDir,
+    });
 
     const saver = new ConversationSaver(page, {
       outputDir: options.outputDir,
@@ -74,7 +85,10 @@ export default async function exportLibrary(options: ExportLibraryOptions): Prom
       }
       saver.setPage(page); // preserves pageFetchRecords/failedSlugs/doneFile, unlike constructing a new saver
       try {
-        await page.goto("https://www.perplexity.ai/", { waitUntil: "domcontentloaded", timeout: 300_000 });
+        await page.goto("https://www.perplexity.ai/", {
+          waitUntil: "domcontentloaded",
+          timeout: 300_000,
+        });
       } catch {
         // best-effort
       }
@@ -90,7 +104,9 @@ export default async function exportLibrary(options: ExportLibraryOptions): Prom
         const message = (err as Error).message ?? String(err);
         if (isFrameError(message) && recoveryCount < maxRecoveriesPerRun) {
           recoveryCount += 1;
-          console.error(`  Frame error (recovery ${recoveryCount}/${maxRecoveriesPerRun}): ${message}`);
+          console.error(
+            `  Frame error (recovery ${recoveryCount}/${maxRecoveriesPerRun}): ${message}`,
+          );
           await recreatePage("frame error");
           return fn();
         }
@@ -100,7 +116,9 @@ export default async function exportLibrary(options: ExportLibraryOptions): Prom
 
     // --- Single-URL mode: -u/--url ------------------------------------------
     if (options.url) {
-      console.log(`Single-URL mode: processing ${options.url} (skipping full library scan)`);
+      console.log(
+        `Single-URL mode: processing ${options.url} (skipping full library scan)`,
+      );
       const match = THREAD_UUID_RE.exec(options.url);
       const slug = match ? match[1] : options.url;
       const conversation: Conversation = {
@@ -110,13 +128,17 @@ export default async function exportLibrary(options: ExportLibraryOptions): Prom
         updatedAt: new Date().toISOString(),
       };
       if (saver.isAlreadyDone(slug)) {
-        console.log(`  Note: ${slug} was already exported previously -- re-exporting as requested.`);
+        console.log(
+          `  Note: ${slug} was already exported previously -- re-exporting as requested.`,
+        );
       }
 
       const passStart = Date.now();
       let processed = 0;
       try {
-        let state = await withFrameRecovery(() => saver.startThread(conversation));
+        let state = await withFrameRecovery(() =>
+          saver.startThread(conversation),
+        );
         while (!saver.isDone(state)) {
           state = await withFrameRecovery(() => saver.fetchNextPage(state));
         }
@@ -127,15 +149,28 @@ export default async function exportLibrary(options: ExportLibraryOptions): Prom
         saver.failedSlugs.push(slug);
       }
 
-      const stats = buildRunStats("single", passStart, saver.pageFetchRecords, saver.failedSlugs, saver.safetyCapSlugs, processed, 0);
+      const stats = buildRunStats(
+        "single",
+        passStart,
+        saver.pageFetchRecords,
+        saver.failedSlugs,
+        saver.safetyCapSlugs,
+        processed,
+        0,
+      );
       await writeRunStats(options.doneFilePath, stats);
       await browser.close();
-      console.log(`Done. Single-URL run finished in ${formatDuration(Date.now() - runStart)}.`);
+      console.log(
+        `Done. Single-URL run finished in ${formatDuration(Date.now() - runStart)}.`,
+      );
       return;
     }
 
     // --- Full-library mode ---------------------------------------------------
-    const conversations = await getConversations(page, saver.getDoneFileSnapshot());
+    const conversations = await getConversations(
+      page,
+      saver.getDoneFileSnapshot(),
+    );
     console.log(`Found ${conversations.length} new conversations to process`);
 
     // Pass 1 ("quick"): every new thread gets a bounded chance of up to
@@ -150,8 +185,13 @@ export default async function exportLibrary(options: ExportLibraryOptions): Prom
 
     for (const conversation of conversations) {
       try {
-        let state = await withFrameRecovery(() => saver.startThread(conversation));
-        while (!saver.isDone(state) && state.pageIndex < options.deferAfterPages) {
+        let state = await withFrameRecovery(() =>
+          saver.startThread(conversation),
+        );
+        while (
+          !saver.isDone(state) &&
+          state.pageIndex < options.deferAfterPages
+        ) {
           state = await withFrameRecovery(() => saver.fetchNextPage(state));
         }
 
@@ -161,12 +201,16 @@ export default async function exportLibrary(options: ExportLibraryOptions): Prom
           successSinceRefresh += 1;
         } else {
           if (options.verbose) {
-            console.log(`[verbose] deferring ${conversation.slug} to pass 2 (still going after ${options.deferAfterPages} pages)`);
+            console.log(
+              `[verbose] deferring ${conversation.slug} to pass 2 (still going after ${options.deferAfterPages} pages)`,
+            );
           }
           deferred.push(state);
         }
       } catch (err) {
-        console.error(`  FAILED ${conversation.url}: ${(err as Error).message}`);
+        console.error(
+          `  FAILED ${conversation.url}: ${(err as Error).message}`,
+        );
         saver.failedSlugs.push(conversation.slug);
       }
 
@@ -176,9 +220,19 @@ export default async function exportLibrary(options: ExportLibraryOptions): Prom
       await sleep(2000); // politeness gap between conversations, independent of the per-page adaptive delay
     }
 
-    const quickStats = buildRunStats("quick", quickStart, saver.pageFetchRecords, saver.failedSlugs, saver.safetyCapSlugs, quickProcessed, deferred.length);
+    const quickStats = buildRunStats(
+      "quick",
+      quickStart,
+      saver.pageFetchRecords,
+      saver.failedSlugs,
+      saver.safetyCapSlugs,
+      quickProcessed,
+      deferred.length,
+    );
     await writeRunStats(options.doneFilePath, quickStats);
-    console.log(`Pass 1 (quick) done: ${quickProcessed} exported, ${deferred.length} deferred, ${saver.failedSlugs.length} failed so far.`);
+    console.log(
+      `Pass 1 (quick) done: ${quickProcessed} exported, ${deferred.length} deferred, ${saver.failedSlugs.length} failed so far.`,
+    );
 
     // Pass 2 ("deferred"): resume every parked thread to completion. Nothing
     // else is waiting behind them now, so a marathon thread no longer blocks
@@ -197,7 +251,9 @@ export default async function exportLibrary(options: ExportLibraryOptions): Prom
         deferredProcessed += 1;
         successSinceRefresh += 1;
       } catch (err) {
-        console.error(`  FAILED (deferred) ${state.conversation.url}: ${(err as Error).message}`);
+        console.error(
+          `  FAILED (deferred) ${state.conversation.url}: ${(err as Error).message}`,
+        );
         saver.failedSlugs.push(state.conversation.slug);
       }
 
@@ -213,14 +269,14 @@ export default async function exportLibrary(options: ExportLibraryOptions): Prom
       saver.failedSlugs.slice(deferredFailedStart),
       saver.safetyCapSlugs,
       deferredProcessed,
-      0
+      0,
     );
     await writeRunStats(options.doneFilePath, deferredStats);
 
     console.log(
       `Done in ${formatDuration(Date.now() - runStart)}. ` +
         `${quickProcessed + deferredProcessed} exported (${quickProcessed} quick, ${deferredProcessed} deferred), ` +
-        `${saver.failedSlugs.length} failed. Recoveries used: ${recoveryCount}/${maxRecoveriesPerRun}.`
+        `${saver.failedSlugs.length} failed. Recoveries used: ${recoveryCount}/${maxRecoveriesPerRun}.`,
     );
   } catch (error) {
     console.error("An error occurred:", error);

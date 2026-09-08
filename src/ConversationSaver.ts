@@ -9,21 +9,54 @@ import {
   RateLimitError,
 } from "./rateLimitStrategy";
 import renderConversation from "./renderConversation";
-import { buildFilename, loadDoneFile, saveDoneFile, THREAD_UUID_RE } from "./utils";
+import {
+  buildFilename,
+  loadDoneFile,
+  saveDoneFile,
+  THREAD_UUID_RE,
+} from "./utils";
 import { Conversation, DoneFile, PageFetchRecord, ThreadResult } from "./types";
-import type { ConversationEntry, ConversationResponse } from "./types/conversation";
+import type {
+  ConversationEntry,
+  ConversationResponse,
+} from "./types/conversation";
 
 // Block use cases the Perplexity SPA requests when fetching a thread.
 // Including these makes the response shape identical to what
 // renderConversation expects. Unchanged from the working implementation.
 const SUPPORTED_BLOCKS = [
-  "answer_modes", "media_items", "knowledge_cards", "inline_entity_cards", "place_widgets",
-  "finance_widgets", "prediction_market_widgets", "sports_widgets", "flight_status_widgets",
-  "news_widgets", "shopping_widgets", "jobs_widgets", "search_result_widgets", "inline_images",
-  "inline_assets", "placeholder_cards", "diff_blocks", "inline_knowledge_cards", "entity_group_v2",
-  "refinement_filters", "canvas_mode", "maps_preview", "answer_tabs", "price_comparison_widgets",
-  "preserve_latex", "generic_onboarding_widgets", "in_context_suggestions", "pending_followups",
-  "inline_claims", "unified_assets", "workflow_steps", "background_agents",
+  "answer_modes",
+  "media_items",
+  "knowledge_cards",
+  "inline_entity_cards",
+  "place_widgets",
+  "finance_widgets",
+  "prediction_market_widgets",
+  "sports_widgets",
+  "flight_status_widgets",
+  "news_widgets",
+  "shopping_widgets",
+  "jobs_widgets",
+  "search_result_widgets",
+  "inline_images",
+  "inline_assets",
+  "placeholder_cards",
+  "diff_blocks",
+  "inline_knowledge_cards",
+  "entity_group_v2",
+  "refinement_filters",
+  "canvas_mode",
+  "maps_preview",
+  "answer_tabs",
+  "price_comparison_widgets",
+  "preserve_latex",
+  "generic_onboarding_widgets",
+  "in_context_suggestions",
+  "pending_followups",
+  "inline_claims",
+  "unified_assets",
+  "workflow_steps",
+  "background_agents",
 ];
 
 /** Default entries fetched per API page. Raised from 25 -> 100: fewer round
@@ -53,7 +86,9 @@ const MAX_PAGES = 2000;
  * declare it. Extended here locally rather than editing that shared file
  * without confirmation.
  */
-type RawPageResponse = ConversationResponse & { background_entries?: unknown[] };
+type RawPageResponse = ConversationResponse & {
+  background_entries?: unknown[];
+};
 
 export interface ConversationSaverOptions {
   outputDir: string;
@@ -128,7 +163,9 @@ export class ConversationSaver {
   /** Loads done.json from disk. Call once before the run starts. */
   async initialize(): Promise<void> {
     this.doneFile = await loadDoneFile(this.doneFilePath);
-    console.log(`Loaded ${Object.keys(this.doneFile.processed).length} processed threads from done file`);
+    console.log(
+      `Loaded ${Object.keys(this.doneFile.processed).length} processed threads from done file`,
+    );
   }
 
   /** Read-only snapshot for getConversations() to filter against. */
@@ -178,7 +215,9 @@ export class ConversationSaver {
         // JSONL's one-object-per-line format makes this harmless: every
         // earlier line is a complete, independently-parseable object, so we
         // discard only the incomplete tail and resume from the last good line.
-        this.log(`discarding truncated staging line for ${slug} (crash recovery)`);
+        this.log(
+          `discarding truncated staging line for ${slug} (crash recovery)`,
+        );
       }
     }
     return pages;
@@ -195,7 +234,9 @@ export class ConversationSaver {
   async startThread(conversation: Conversation): Promise<ThreadFetchState> {
     const match = THREAD_UUID_RE.exec(conversation.url);
     if (!match) {
-      throw new Error(`Could not extract thread UUID from URL: ${conversation.url}`);
+      throw new Error(
+        `Could not extract thread UUID from URL: ${conversation.url}`,
+      );
     }
     const threadId = match[1];
 
@@ -214,7 +255,9 @@ export class ConversationSaver {
       status = stagedPage.status;
     }
     if (staged.length > 0) {
-      this.log(`resuming ${conversation.slug} from ${staged.length} staged page(s), ${entries.length} entries recovered`);
+      this.log(
+        `resuming ${conversation.slug} from ${staged.length} staged page(s), ${entries.length} entries recovered`,
+      );
     }
 
     return {
@@ -240,10 +283,20 @@ export class ConversationSaver {
    * decisions happen in Node afterwards (see fetchNextPage), so no single
    * Puppeteer call ever has to contain a retry loop -- eliminating the
    * protocolTimeout risk a stacked in-browser retry loop would carry. */
-  private async rawFetchPageOnce(threadId: string, offset: number): Promise<RawFetchResult> {
+  private async rawFetchPageOnce(
+    threadId: string,
+    offset: number,
+  ): Promise<RawFetchResult> {
     return this.page.evaluate(
-      async (tid: string, off: number, limit: number, blocks: string[]): Promise<RawFetchResult> => {
-        const blocksParam = blocks.map((b) => `supported_block_use_cases=${b}`).join("&");
+      async (
+        tid: string,
+        off: number,
+        limit: number,
+        blocks: string[],
+      ): Promise<RawFetchResult> => {
+        const blocksParam = blocks
+          .map((b) => `supported_block_use_cases=${b}`)
+          .join("&");
         const url = `/rest/thread/${tid}?with_parent_info=true&with_schematized_response=true&version=2.18&source=default&limit=${limit}&offset=${off}&from_first=true&${blocksParam}`;
 
         const resp = await fetch(url, {
@@ -260,7 +313,7 @@ export class ConversationSaver {
       threadId,
       offset,
       this.pageLimit,
-      SUPPORTED_BLOCKS
+      SUPPORTED_BLOCKS,
     );
   }
 
@@ -275,7 +328,12 @@ export class ConversationSaver {
     const { data, attempts, tier } = await fetchWithTieredRetry(
       () => this.rawFetchPageOnce(state.threadId, state.offset),
       (bodyText) => JSON.parse(bodyText) as RawPageResponse,
-      { verbose: this.verbose, label, adaptive: state.adaptive, maxRetries: this.rateLimitRetries }
+      {
+        verbose: this.verbose,
+        label,
+        adaptive: state.adaptive,
+        maxRetries: this.rateLimitRetries,
+      },
     );
 
     const durationMs = Date.now() - start;
@@ -289,7 +347,9 @@ export class ConversationSaver {
       tier,
       retries: attempts - 1,
     });
-    this.log(`fetched page ${state.pageIndex} for ${state.conversation.slug}: ${pageEntries.length} entries in ${durationMs}ms (tier=${tier})`);
+    this.log(
+      `fetched page ${state.pageIndex} for ${state.conversation.slug}: ${pageEntries.length} entries in ${durationMs}ms (tier=${tier})`,
+    );
 
     this.appendStagingLine(state.conversation.slug, {
       pageIndex: state.pageIndex,
@@ -311,7 +371,7 @@ export class ConversationSaver {
       state.hitSafetyCap = true;
       this.safetyCapSlugs.push(state.conversation.slug);
       console.error(
-        `  WARNING: thread ${state.conversation.slug} hit the pagination safety cap (${MAX_PAGES} pages) -- content is truncated.`
+        `  WARNING: thread ${state.conversation.slug} hit the pagination safety cap (${MAX_PAGES} pages) -- content is truncated.`,
       );
     }
 
@@ -324,7 +384,10 @@ export class ConversationSaver {
     const previous = this.doneFile.processed[slug];
     if (!previous) return;
     for (const ext of [".json", ".md"]) {
-      const stalePath = path.join(this.outputDir, previous.filename.replace(/\.(json|md)$/, ext));
+      const stalePath = path.join(
+        this.outputDir,
+        previous.filename.replace(/\.(json|md)$/, ext),
+      );
       if (fs.existsSync(stalePath)) {
         fs.rmSync(stalePath);
         this.log(`deleted stale file ${stalePath}`);
@@ -350,7 +413,10 @@ export class ConversationSaver {
       next_cursor: null,
     };
 
-    fs.writeFileSync(path.join(this.outputDir, `${filename}.json`), JSON.stringify(merged, null, 2));
+    fs.writeFileSync(
+      path.join(this.outputDir, `${filename}.json`),
+      JSON.stringify(merged, null, 2),
+    );
 
     let markdown: string;
     try {
@@ -362,7 +428,10 @@ export class ConversationSaver {
     }
     fs.writeFileSync(path.join(this.outputDir, `${filename}.md`), markdown);
 
-    this.doneFile.processed[slug] = { updatedAt: state.conversation.updatedAt, filename };
+    this.doneFile.processed[slug] = {
+      updatedAt: state.conversation.updatedAt,
+      filename,
+    };
     await saveDoneFile(this.doneFile, this.doneFilePath);
     this.clearStaging(slug);
 

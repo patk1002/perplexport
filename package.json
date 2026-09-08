@@ -54,5 +54,8 @@
   "bugs": {
     "url": "https://github.com/patk1002/perplexport/issues"
   },
-  "homepage": "https://github.com/patk1002/perplexport#readme"
+  "homepage": "https://github.com/patk1002/perplexport#readme",
+  "allowScripts": {
+    "puppeteer@24.9.0": true
+  }
 }

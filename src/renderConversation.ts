@@ -6,7 +6,7 @@ import {
 } from "./types/conversation";
 
 export default function renderConversation(
-  conversation: ConversationResponse
+  conversation: ConversationResponse,
 ): string {
   const { entries } = conversation;
 
@@ -14,7 +14,7 @@ export default function renderConversation(
     return "";
   }
 
-  let items = [
+  const items = [
     `---\nPerplexity URL: https://www.perplexity.ai/search/${
       conversation.entries[0].thread_url_slug
     }\nLast updated: ${
@@ -36,19 +36,19 @@ export default function renderConversation(
     items.push(`>[!important] ${entry.query_str.split("\n").join("\n> ")}`);
 
     const answerBlock = entry.blocks.find(
-      (block) => block.intended_usage === "ask_text"
+      (block) => block.intended_usage === "ask_text",
     )?.markdown_block;
 
     const sourcesBlock = entry.blocks.find(
-      (block) => block.intended_usage === "sources_answer_mode"
+      (block) => block.intended_usage === "sources_answer_mode",
     )?.sources_mode_block;
 
     const imagesBlock = entry.blocks.find(
-      (block) => block.intended_usage === "image_answer_mode"
+      (block) => block.intended_usage === "image_answer_mode",
     )?.image_mode_block;
 
     const videoBlock = entry.blocks.find(
-      (block) => block.intended_usage === "video_answer_mode"
+      (block) => block.intended_usage === "video_answer_mode",
     )?.video_mode_block;
 
     if (imagesBlock) {

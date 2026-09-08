@@ -178,8 +178,8 @@ export async function login(page: Page, email: string, options: LoginOptions = {
           return null;
         }
       });
-    } catch (err: any) {
-      const msg = err?.message || String(err);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
       console.log(`  (session check interrupted, retrying: ${msg.split("\n")[0]})`);
       session = null;
     }

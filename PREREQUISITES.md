@@ -8,8 +8,8 @@
 - **npm** (ships with Node) or **yarn**, whichever you prefer — this repo's
   `yarn.lock` suggests yarn, but `npm install` works fine too.
 - **git**, to clone the repo.
-- A working **GUI display** for the login step. Login is *interactive and
-  headful* — Puppeteer opens a real, visible Chrome window so you can type
+- A working **GUI display** for the login step. Login is _interactive and
+  headful_ — Puppeteer opens a real, visible Chrome window so you can type
   the 6-digit email code yourself. On:
   - **Native Linux desktop** — works out of the box.
   - **WSL2** — requires **WSLg** (bundled with recent Windows 11 WSL

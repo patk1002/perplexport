@@ -51,12 +51,18 @@ test("parseRetryAfter: past date, missing, or garbage all return null", () => {
 });
 
 test("parseQuotaHeaders: IETF-draft RateLimit-* pair, case-insensitive", () => {
-  const result = parseQuotaHeaders({ "RateLimit-Remaining": "0", "ratelimit-reset": "15" });
+  const result = parseQuotaHeaders({
+    "RateLimit-Remaining": "0",
+    "ratelimit-reset": "15",
+  });
   assert.deepEqual(result, { remaining: 0, resetMs: 15_000 });
 });
 
 test("parseQuotaHeaders: falls back to legacy X-RateLimit-* pair", () => {
-  const result = parseQuotaHeaders({ "X-RateLimit-Remaining": "2", "X-RateLimit-Reset": "5" });
+  const result = parseQuotaHeaders({
+    "X-RateLimit-Remaining": "2",
+    "X-RateLimit-Reset": "5",
+  });
   assert.deepEqual(result, { remaining: 2, resetMs: 5_000 });
 });
 
@@ -66,9 +72,15 @@ test("parseQuotaHeaders: returns null when neither pair is present", () => {
 
 test("computeExponentialWaitMs: matches the tuned schedule, then caps", () => {
   for (let attempt = 1; attempt <= RATE_LIMIT_SCHEDULE_MS.length; attempt++) {
-    assert.equal(computeExponentialWaitMs(attempt), RATE_LIMIT_SCHEDULE_MS[attempt - 1]);
+    assert.equal(
+      computeExponentialWaitMs(attempt),
+      RATE_LIMIT_SCHEDULE_MS[attempt - 1],
+    );
   }
-  assert.equal(computeExponentialWaitMs(99), RATE_LIMIT_SCHEDULE_MS[RATE_LIMIT_SCHEDULE_MS.length - 1]);
+  assert.equal(
+    computeExponentialWaitMs(99),
+    RATE_LIMIT_SCHEDULE_MS[RATE_LIMIT_SCHEDULE_MS.length - 1],
+  );
 });
 
 test("AdaptiveDelay: jumps to proven wait, then decays toward zero", () => {
@@ -85,19 +97,29 @@ test("AdaptiveDelay: jumps to proven wait, then decays toward zero", () => {
   let iterations = 0;
   while (adaptive.value > 0 && iterations < 100) {
     adaptive.registerSuccess();
-    assert.ok(adaptive.value <= previous, "baseline must never increase on a clean response");
+    assert.ok(
+      adaptive.value <= previous,
+      "baseline must never increase on a clean response",
+    );
     previous = adaptive.value;
     iterations += 1;
   }
-  assert.equal(adaptive.value, 0, "baseline should eventually floor to exactly zero");
+  assert.equal(
+    adaptive.value,
+    0,
+    "baseline should eventually floor to exactly zero",
+  );
 });
 
 test("decideThrottle: tier 1 fires on any response with low remaining quota", () => {
   const adaptive = new AdaptiveDelay();
   const decision = decideThrottle(
-    { status: 200, headers: { "RateLimit-Remaining": "1", "RateLimit-Reset": "20" } },
+    {
+      status: 200,
+      headers: { "RateLimit-Remaining": "1", "RateLimit-Reset": "20" },
+    },
     1,
-    adaptive
+    adaptive,
   );
   assert.equal(decision.tier, "quota-header");
   assert.equal(decision.waitMs, 20_000);
@@ -105,7 +127,11 @@ test("decideThrottle: tier 1 fires on any response with low remaining quota", ()
 
 test("decideThrottle: tier 2 fires on 429 with Retry-After, ignoring tier 3", () => {
   const adaptive = new AdaptiveDelay();
-  const decision = decideThrottle({ status: 429, headers: { "retry-after": "45" } }, 1, adaptive);
+  const decision = decideThrottle(
+    { status: 429, headers: { "retry-after": "45" } },
+    1,
+    adaptive,
+  );
   assert.equal(decision.tier, "retry-after");
   assert.equal(decision.waitMs, 45_000);
 });
@@ -133,10 +159,14 @@ test("fetchWithTieredRetry: retries through 429s with no headers, then succeeds"
       if (calls < 3) {
         return { status: 429, headers: {}, bodyText: "" };
       }
-      return { status: 200, headers: {}, bodyText: JSON.stringify({ ok: true }) };
+      return {
+        status: 200,
+        headers: {},
+        bodyText: JSON.stringify({ ok: true }),
+      };
     },
     (bodyText) => JSON.parse(bodyText) as { ok: boolean },
-    { adaptive: new AdaptiveDelay(), maxRetries: 3, sleepFn: instantSleep }
+    { adaptive: new AdaptiveDelay(), maxRetries: 3, sleepFn: instantSleep },
   );
 
   assert.equal(calls, 3);
@@ -150,9 +180,9 @@ test("fetchWithTieredRetry: throws RateLimitError once maxRetries is exhausted",
       fetchWithTieredRetry(
         async () => ({ status: 429, headers: {}, bodyText: "" }),
         (bodyText) => bodyText,
-        { adaptive: new AdaptiveDelay(), maxRetries: 2, sleepFn: instantSleep }
+        { adaptive: new AdaptiveDelay(), maxRetries: 2, sleepFn: instantSleep },
       ),
-    RateLimitError
+    RateLimitError,
   );
 });
 
@@ -162,8 +192,8 @@ test("fetchWithTieredRetry: a non-retryable status throws immediately, not a Rat
       fetchWithTieredRetry(
         async () => ({ status: 500, headers: {}, bodyText: "" }),
         (bodyText) => bodyText,
-        { adaptive: new AdaptiveDelay(), maxRetries: 3, sleepFn: instantSleep }
+        { adaptive: new AdaptiveDelay(), maxRetries: 3, sleepFn: instantSleep },
       ),
-    (err: unknown) => err instanceof Error && !(err instanceof RateLimitError)
+    (err: unknown) => err instanceof Error && !(err instanceof RateLimitError),
   );
 });

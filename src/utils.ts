@@ -1,12 +1,18 @@
-
 import { promises as fs } from "fs";
-import { DoneFile, DurationStats, PageFetchRecord, RunStats, TierUsage } from "./types";
+import {
+  DoneFile,
+  DurationStats,
+  PageFetchRecord,
+  RunStats,
+  TierUsage,
+} from "./types";
 
 /** Matches a Perplexity thread UUID out of a /search/<uuid> URL. Shared
  * between ConversationSaver.ts and exportLibrary.ts (the latter for parsing
  * -u/--url) so the pattern only has to be updated in one place if Perplexity
  * ever changes its URL scheme. */
-export const THREAD_UUID_RE = /\/search\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/i;
+export const THREAD_UUID_RE =
+  /\/search\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/i;
 
 export async function loadDoneFile(doneFilePath: string): Promise<DoneFile> {
   try {
@@ -19,7 +25,10 @@ export async function loadDoneFile(doneFilePath: string): Promise<DoneFile> {
   }
 }
 
-export async function saveDoneFile(doneFile: DoneFile, doneFilePath: string): Promise<void> {
+export async function saveDoneFile(
+  doneFile: DoneFile,
+  doneFilePath: string,
+): Promise<void> {
   await fs.writeFile(doneFilePath, JSON.stringify(doneFile, null, 2));
 }
 
@@ -61,7 +70,9 @@ function computeMode(values: number[]): number {
   return mode;
 }
 
-export function computeDurationStats(records: PageFetchRecord[]): DurationStats {
+export function computeDurationStats(
+  records: PageFetchRecord[],
+): DurationStats {
   if (records.length === 0) {
     return { min: 0, max: 0, mean: 0, mode: 0, stdDev: 0, count: 0 };
   }
@@ -69,7 +80,8 @@ export function computeDurationStats(records: PageFetchRecord[]): DurationStats 
   const min = Math.min(...durations);
   const max = Math.max(...durations);
   const mean = durations.reduce((a, b) => a + b, 0) / durations.length;
-  const variance = durations.reduce((sum, d) => sum + (d - mean) ** 2, 0) / durations.length;
+  const variance =
+    durations.reduce((sum, d) => sum + (d - mean) ** 2, 0) / durations.length;
 
   return {
     min: Math.round(min),
@@ -98,7 +110,7 @@ export function buildRunStats(
   failedSlugs: string[],
   safetyCapSlugs: string[],
   threadsProcessed: number,
-  threadsDeferred: number
+  threadsDeferred: number,
 ): RunStats {
   const finishedAt = Date.now();
   return {
@@ -118,7 +130,10 @@ export function buildRunStats(
 
 /** Writes a uniquely-timestamped stats file so a run never overwrites a
  * prior run's summary, e.g. `done.json.stats-quick-20260908101500.json`. */
-export async function writeRunStats(doneFilePath: string, stats: RunStats): Promise<void> {
+export async function writeRunStats(
+  doneFilePath: string,
+  stats: RunStats,
+): Promise<void> {
   const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
   const statsPath = `${doneFilePath}.stats-${stats.pass}-${timestamp}.json`;
   await fs.writeFile(statsPath, JSON.stringify(stats, null, 2));
@@ -128,7 +143,10 @@ export async function writeRunStats(doneFilePath: string, stats: RunStats): Prom
 /** Converts a UTC ISO timestamp to a sortable `YYYYMMDDHHMMSS` string in a
  * given IANA time zone (default America/Chicago), correctly handling
  * DST transitions via Intl.DateTimeFormat instead of manual offset math. */
-export function formatLocalTimestamp(isoString: string, timeZone = "America/Chicago"): string {
+export function formatLocalTimestamp(
+  isoString: string,
+  timeZone = "America/Chicago",
+): string {
   const date = new Date(isoString);
   const parts = new Intl.DateTimeFormat("en-US", {
     timeZone,
@@ -141,7 +159,8 @@ export function formatLocalTimestamp(isoString: string, timeZone = "America/Chic
     hour12: false,
   }).formatToParts(date);
 
-  const get = (type: string) => parts.find((p) => p.type === type)?.value ?? "00";
+  const get = (type: string) =>
+    parts.find((p) => p.type === type)?.value ?? "00";
   return `${get("year")}${get("month")}${get("day")}${get("hour")}${get("minute")}${get("second")}`;
 }
 
@@ -152,7 +171,10 @@ export function formatLocalTimestamp(isoString: string, timeZone = "America/Chic
  * pagination ordering across a multi-hundred-entry thread is not guaranteed
  * to put the most recently updated entry first.
  */
-export function buildFilename(entries: Array<{ thread_title?: string; entry_updated_datetime?: string }>, fallbackId: string): string {
+export function buildFilename(
+  entries: Array<{ thread_title?: string; entry_updated_datetime?: string }>,
+  fallbackId: string,
+): string {
   const title = entries.find((e) => e.thread_title)?.thread_title ?? fallbackId;
 
   let latestUpdatedAt = "";

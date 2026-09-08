@@ -66,7 +66,10 @@ export interface ThrottleDecision {
 }
 
 export class RateLimitError extends Error {
-  constructor(message: string, public readonly retryAfterMs: number | null = null) {
+  constructor(
+    message: string,
+    public readonly retryAfterMs: number | null = null,
+  ) {
     super(message);
     this.name = "RateLimitError";
   }
@@ -84,7 +87,10 @@ function toNumber(value: string | null | undefined): number | null {
 
 /** Case-insensitive header lookup over a plain object (headers cross the
  * Puppeteer boundary as a plain object, not a real `Headers` instance). */
-function getHeader(headers: Record<string, string>, name: string): string | null {
+function getHeader(
+  headers: Record<string, string>,
+  name: string,
+): string | null {
   const lower = name.toLowerCase();
   for (const key of Object.keys(headers)) {
     if (key.toLowerCase() === lower) return headers[key];
@@ -97,7 +103,9 @@ function getHeader(headers: Record<string, string>, name: string): string | null
  * integer) or an HTTP-date. Returns milliseconds to wait, or null if the
  * header is absent/unparseable.
  */
-export function parseRetryAfter(headerValue: string | null | undefined): number | null {
+export function parseRetryAfter(
+  headerValue: string | null | undefined,
+): number | null {
   if (!headerValue) return null;
   const asSeconds = toNumber(headerValue);
   if (asSeconds !== null) return Math.max(0, asSeconds * 1000);
@@ -119,7 +127,7 @@ export function parseRetryAfter(headerValue: string | null | undefined): number 
  * Perplexity's internal, unpublished endpoint.
  */
 export function parseQuotaHeaders(
-  headers: Record<string, string>
+  headers: Record<string, string>,
 ): { remaining: number; resetMs: number } | null {
   const remaining =
     toNumber(getHeader(headers, "RateLimit-Remaining")) ??
@@ -193,7 +201,7 @@ export class AdaptiveDelay {
 export function decideThrottle(
   signal: { status: number; headers: Record<string, string> },
   attempt: number,
-  adaptive: AdaptiveDelay
+  adaptive: AdaptiveDelay,
 ): ThrottleDecision {
   const quota = parseQuotaHeaders(signal.headers);
   const isThrottled = signal.status === 429 || signal.status === 503;
@@ -201,19 +209,33 @@ export function decideThrottle(
   // Tier 1: proactive quota headers, checked regardless of status code.
   if (quota && quota.remaining <= 1) {
     adaptive.registerThrottle(quota.resetMs);
-    return { tier: "quota-header", waitMs: quota.resetMs, detail: `remaining=${quota.remaining}` };
+    return {
+      tier: "quota-header",
+      waitMs: quota.resetMs,
+      detail: `remaining=${quota.remaining}`,
+    };
   }
 
   if (!isThrottled) {
     adaptive.registerSuccess();
-    return { tier: "aimd", waitMs: adaptive.value, detail: "clean response, decaying baseline" };
+    return {
+      tier: "aimd",
+      waitMs: adaptive.value,
+      detail: "clean response, decaying baseline",
+    };
   }
 
   // Tier 2: authoritative Retry-After on an actual 429/503.
-  const retryAfterMs = parseRetryAfter(getHeader(signal.headers, "Retry-After"));
+  const retryAfterMs = parseRetryAfter(
+    getHeader(signal.headers, "Retry-After"),
+  );
   if (retryAfterMs !== null) {
     adaptive.registerThrottle(retryAfterMs);
-    return { tier: "retry-after", waitMs: retryAfterMs, detail: "server Retry-After header" };
+    return {
+      tier: "retry-after",
+      waitMs: retryAfterMs,
+      detail: "server Retry-After header",
+    };
   }
 
   // Tier 3: neither header present -- fixed schedule, floored by the
@@ -268,7 +290,7 @@ export interface TieredRetryResult<T> {
 export async function fetchWithTieredRetry<T>(
   rawFetch: () => Promise<RawFetchResult>,
   parseBody: (bodyText: string) => T,
-  ctx: TieredRetryContext
+  ctx: TieredRetryContext,
 ): Promise<TieredRetryResult<T>> {
   const { verbose = false, label = "request" } = ctx;
   const maxRetries = ctx.maxRetries ?? RATE_LIMIT_RETRIES;
@@ -281,22 +303,29 @@ export async function fetchWithTieredRetry<T>(
       const decision = decideThrottle(result, attempt, ctx.adaptive);
       if (verbose) {
         console.log(
-          `[verbose] ${label}: ok (tier=${decision.tier}, next delay ${Math.round(decision.waitMs / 1000)}s -- ${decision.detail})`
+          `[verbose] ${label}: ok (tier=${decision.tier}, next delay ${Math.round(decision.waitMs / 1000)}s -- ${decision.detail})`,
         );
       }
       if (decision.waitMs > 0) await doSleep(decision.waitMs);
-      return { data: parseBody(result.bodyText), waitedMs: decision.waitMs, attempts: attempt, tier: decision.tier };
+      return {
+        data: parseBody(result.bodyText),
+        waitedMs: decision.waitMs,
+        attempts: attempt,
+        tier: decision.tier,
+      };
     }
 
     if (result.status === 429 || result.status === 503) {
       if (attempt > maxRetries) {
-        throw new RateLimitError(`Exhausted ${maxRetries} retries (last status ${result.status}) for ${label}`);
+        throw new RateLimitError(
+          `Exhausted ${maxRetries} retries (last status ${result.status}) for ${label}`,
+        );
       }
       const decision = decideThrottle(result, attempt, ctx.adaptive);
       if (verbose) {
         console.log(
           `[verbose] ${label}: rate limited (attempt ${attempt}/${maxRetries}, tier=${decision.tier}), ` +
-            `waiting ${Math.round(decision.waitMs / 1000)}s -- ${decision.detail}`
+            `waiting ${Math.round(decision.waitMs / 1000)}s -- ${decision.detail}`,
         );
       }
       await doSleep(decision.waitMs);

@@ -71,7 +71,7 @@
 >    variants; verifies login via `/api/auth/session` poll instead of waiting
 >    for `#ask-input` (which is rendered to logged-out users too); explicit
 >    instructions to use the 6-digit code, not the magic link in the email
->    (the magic link logs in your *regular* browser, not the Puppeteer one).
+>    (the magic link logs in your _regular_ browser, not the Puppeteer one).
 > 2. **Library enumeration** (`src/listConversations.ts`) — observe and replay
 >    the `/rest/thread/list_ask_threads` POST with paginated `offset`. The old
 >    DOM-scrape approach only saw the ~20 threads in the sidebar; this gets

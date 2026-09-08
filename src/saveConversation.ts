@@ -6,7 +6,7 @@ import { DownloadManager, DownloadError } from "./DownloadManager";
 export async function saveConversation(
   page: Page,
   conversation: Conversation,
-  downloadManager: DownloadManager
+  downloadManager: DownloadManager,
 ): Promise<void> {
   console.log(`Processing conversation: ${conversation.url}`);
   await page.goto(conversation.url);
@@ -35,7 +35,7 @@ export async function saveConversation(
     try {
       await page.waitForSelector("text/Export as Markdown", { timeout: 1000 });
       exportOptionFound = true;
-    } catch (e) {
+    } catch {
       // Option not found, wait a bit and try again
       await sleep(500);
     }
@@ -57,7 +57,7 @@ export async function saveConversation(
         retryCount++;
         if (retryCount < maxRetries) {
           console.log(
-            `Rate limit hit, waiting 5 minutes before retry ${retryCount}/${maxRetries}...`
+            `Rate limit hit, waiting 5 minutes before retry ${retryCount}/${maxRetries}...`,
           );
           await sleep(300000); // Wait 5 minutes
           await page.click('[data-testid="thread-dropdown-menu"]');

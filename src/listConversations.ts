@@ -3,8 +3,10 @@ import { Conversation, DoneFile } from "./types";
 
 const GRAPHQL_URL = "https://www.perplexity.ai/rest/perplexity_ask/graphql";
 
-const FIRST_PAGE_HASH = "1c1f9e86416eddf3dfed6ede99575a5cc241b59cf079f2e9295ed927f2908006";
-const NEXT_PAGE_HASH = "e207cce86b2c9b67fca3ea7d8450d675ec86c0c429b38e42e88f3b027e7c8729";
+const FIRST_PAGE_HASH =
+  "1c1f9e86416eddf3dfed6ede99575a5cc241b59cf079f2e9295ed927f2908006";
+const NEXT_PAGE_HASH =
+  "e207cce86b2c9b67fca3ea7d8450d675ec86c0c429b38e42e88f3b027e7c8729";
 
 interface RawThread {
   slug: string;
@@ -16,10 +18,15 @@ async function fetchGraphQL(
   page: Page,
   operationName: string,
   variables: Record<string, unknown>,
-  sha256Hash: string
+  sha256Hash: string,
 ): Promise<any> {
   return await page.evaluate(
-    async (url: string, opName: string, vars: Record<string, unknown>, hash: string) => {
+    async (
+      url: string,
+      opName: string,
+      vars: Record<string, unknown>,
+      hash: string,
+    ) => {
       const res = await fetch(url, {
         method: "POST",
         credentials: "include",
@@ -35,13 +42,13 @@ async function fetchGraphQL(
     GRAPHQL_URL,
     operationName,
     variables,
-    sha256Hash
+    sha256Hash,
   );
 }
 
 export async function getConversations(
   page: Page,
-  doneFile: DoneFile
+  doneFile: DoneFile,
 ): Promise<Conversation[]> {
   console.log("Fetching library via GraphQL...");
   const all: RawThread[] = [];
@@ -58,7 +65,7 @@ export async function getConversations(
       sources: null,
       includeTemporary: null,
     },
-    FIRST_PAGE_HASH
+    FIRST_PAGE_HASH,
   );
 
   let threads = result?.data?.viewer?.recentGroup?.threads;
@@ -86,7 +93,7 @@ export async function getConversations(
         statuses: null,
         threadTypes: null,
       },
-      NEXT_PAGE_HASH
+      NEXT_PAGE_HASH,
     );
     threads = result?.data?.viewer?.recentGroup?.threads;
     if (!threads) break;

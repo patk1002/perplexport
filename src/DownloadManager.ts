@@ -2,7 +2,10 @@ import { CDPSession, Page } from "puppeteer";
 import path from "path";
 
 export class DownloadError extends Error {
-  constructor(message: string, public readonly statusCode?: number) {
+  constructor(
+    message: string,
+    public readonly statusCode?: number,
+  ) {
     super(message);
     this.name = "DownloadError";
   }
@@ -30,7 +33,7 @@ export class DownloadManager {
 
   public static async create(
     page: Page,
-    downloadPath: string
+    downloadPath: string,
   ): Promise<DownloadManager> {
     const manager = new DownloadManager(downloadPath);
     await manager.initialize(page);
@@ -57,7 +60,7 @@ export class DownloadManager {
         if (event.state === "completed" && this.currentDownloadFilename) {
           this.lastDownloadedFile = path.join(
             this.downloadPath,
-            this.currentDownloadFilename
+            this.currentDownloadFilename,
           );
           if (this.downloadResolve) {
             this.downloadResolve(this.lastDownloadedFile);
@@ -76,15 +79,15 @@ export class DownloadManager {
             this.downloadReject(
               new DownloadError(
                 `Download failed: ${event.error || "Unknown error"}`,
-                isRateLimit ? 429 : undefined
-              )
+                isRateLimit ? 429 : undefined,
+              ),
             );
             this.downloadResolve = null;
             this.downloadReject = null;
           }
           this.currentDownloadFilename = null;
         }
-      }
+      },
     );
   }
 
@@ -94,8 +97,8 @@ export class DownloadManager {
         this.downloadReject(
           new DownloadError(
             `Download failed: HTTP ${response.status()} ${response.statusText()}`,
-            response.status()
-          )
+            response.status(),
+          ),
         );
         this.downloadResolve = null;
         this.downloadReject = null;
@@ -105,7 +108,7 @@ export class DownloadManager {
   }
 
   public async waitForDownload(
-    triggerDownload?: () => Promise<void>
+    triggerDownload?: () => Promise<void>,
   ): Promise<string> {
     if (this.downloadPromise) {
       return this.downloadPromise;
