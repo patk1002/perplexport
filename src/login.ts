@@ -26,10 +26,9 @@ const CONTINUE_BUTTON_SELECTORS = [
  * Best-effort click for a possible second-step "Sign In" button that may
  * appear on an interstitial screen after "Continue with email" -- observed
  * 2026-09-08: the automated flow stopped at "Continue with email" and the
- * 6-digit code field only appeared after a MANUAL "Sign In" click. Not
- * confirmed against the real current DOM (no selector guessed blindly);
- * this list is tried the same tolerant way as the other selector lists --
- * if none match, this is a no-op and behavior is unchanged from before.
+ * 6-digit code field only appeared after a MANUAL "Sign In" click. CONFIRMED
+ * against the real DOM in live testing the same day -- this selector
+ * reliably matches and the automated click now succeeds without manual help.
  */
 const SIGN_IN_SELECTORS = [
   "button::-p-text('Sign In')",
@@ -38,6 +37,29 @@ const SIGN_IN_SELECTORS = [
 ];
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+/** Per-attempt cap on a single /api/auth/session check. Without this, a
+ * page.evaluate() call that hangs instead of cleanly rejecting blocks the
+ * poll loop from ever returning to check either the heartbeat or the
+ * overall timeout -- the outer timeout is only evaluated between
+ * iterations, so one hung inner await defeats it entirely. */
+const SESSION_CHECK_TIMEOUT_MS = 10_000;
+
+/** Per-attempt cap on a diagnostic screenshot. Observed 2026-09-08: a
+ * page.screenshot() call stalled for ~28 minutes (close to this project's
+ * configured 30-minute protocolTimeout) when the Puppeteer Chrome window
+ * lost focus -- Chrome deprioritizes rendering for backgrounded tabs, so
+ * Page.captureScreenshot has nothing fresh to return until focus returns.
+ * Screenshots are purely diagnostic (verbose-gated); failing fast and
+ * skipping one is far better than blocking the entire login sequence for
+ * up to the full protocolTimeout. */
+const SCREENSHOT_TIMEOUT_MS = 8_000;
+
+function timeoutAfter(ms: number, label: string): Promise<never> {
+  return new Promise((_, reject) => {
+    setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms);
+  });
+}
 
 export interface LoginOptions {
   verbose?: boolean;
@@ -81,7 +103,9 @@ export async function login(page: Page, email: string, options: LoginOptions = {
     screenshotStep += 1;
     const file = path.join(dir, `${String(screenshotStep).padStart(2, "0")}-${label}.png`);
     try {
-      await page.screenshot({ path: file as `${string}.png` });
+      const shot = page.screenshot({ path: file as `${string}.png` });
+      shot.catch(() => undefined); // swallow a late settle from the race's loser
+      await Promise.race([shot, timeoutAfter(SCREENSHOT_TIMEOUT_MS, `screenshot (${label})`)]);
       console.log(`  [verbose] saved login screenshot: ${file}`);
     } catch (err) {
       console.log(`  [verbose] could not save login screenshot (${label}): ${(err as Error).message}`);
@@ -127,8 +151,8 @@ export async function login(page: Page, email: string, options: LoginOptions = {
 
   await snapshot("after-continue-click");
 
-  // Possible second-step "Sign In" button on an interstitial screen -- see
-  // SIGN_IN_SELECTORS comment above. No-op if this step doesn't exist.
+  // Second-step "Sign In" button on an interstitial screen -- confirmed
+  // real via live testing; see SIGN_IN_SELECTORS comment above.
   await tryClickAny(page, SIGN_IN_SELECTORS, 5000, "Clicked sign-in");
 
   await snapshot("after-sign-in-click");
@@ -166,7 +190,7 @@ export async function login(page: Page, email: string, options: LoginOptions = {
   while (Date.now() - start < timeoutMs) {
     let session: { user?: { email?: string } } | null = null;
     try {
-      session = await page.evaluate(async () => {
+      const sessionCheck = page.evaluate(async () => {
         try {
           const r = await fetch("/api/auth/session", {
             credentials: "include",
@@ -178,6 +202,13 @@ export async function login(page: Page, email: string, options: LoginOptions = {
           return null;
         }
       });
+      // Swallow a late rejection/resolution from the loser of the race below
+      // so it never surfaces as an unhandled rejection after we've moved on.
+      sessionCheck.catch(() => undefined);
+      session = await Promise.race([
+        sessionCheck,
+        timeoutAfter(SESSION_CHECK_TIMEOUT_MS, "session check"),
+      ]);
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
       console.log(`  (session check interrupted, retrying: ${msg.split("\n")[0]})`);
