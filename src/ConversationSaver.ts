@@ -14,25 +14,33 @@ import { buildFilename, loadDoneFile, saveDoneFile, THREAD_UUID_RE } from "./uti
 import { Conversation, DoneFile, PageFetchRecord, ThreadResult } from "./types";
 import type { ConversationEntry, ConversationResponse } from "./types/conversation";
 
-// Block use cases the Perplexity SPA requests when fetching a thread.
-// Including these makes the response shape identical to what
-// renderConversation expects. Unchanged from the working implementation.
+/**
+ * Block use cases the Perplexity SPA requests when fetching a thread.
+ * Captured directly from the real frontend's own DevTools Network request
+ * on 2026-09-08 (see rawFetchPageOnce's cursor-based rewrite below for
+ * context on why this was re-verified): the real request includes
+ * `workflow_widgets` and `navigation_results`, which an earlier version of
+ * this list did not, and does NOT include `knowledge_cards`,
+ * `prediction_market_widgets`, `flight_status_widgets`, or
+ * `inline_knowledge_cards`, which an earlier version of this list
+ * incorrectly did. Matching the real request exactly removes one more
+ * source of behavioral drift from the actual product.
+ */
 const SUPPORTED_BLOCKS = [
-  "answer_modes", "media_items", "knowledge_cards", "inline_entity_cards", "place_widgets",
-  "finance_widgets", "prediction_market_widgets", "sports_widgets", "flight_status_widgets",
-  "news_widgets", "shopping_widgets", "jobs_widgets", "search_result_widgets", "inline_images",
-  "inline_assets", "placeholder_cards", "diff_blocks", "inline_knowledge_cards", "entity_group_v2",
-  "refinement_filters", "canvas_mode", "maps_preview", "answer_tabs", "price_comparison_widgets",
-  "preserve_latex", "generic_onboarding_widgets", "in_context_suggestions", "pending_followups",
-  "inline_claims", "unified_assets", "workflow_steps", "background_agents",
+  "answer_modes", "media_items", "inline_entity_cards", "place_widgets",
+  "finance_widgets", "sports_widgets", "news_widgets", "shopping_widgets",
+  "jobs_widgets", "search_result_widgets", "inline_images", "inline_assets",
+  "placeholder_cards", "diff_blocks", "entity_group_v2", "refinement_filters",
+  "canvas_mode", "maps_preview", "answer_tabs", "price_comparison_widgets",
+  "preserve_latex", "generic_onboarding_widgets", "in_context_suggestions",
+  "pending_followups", "inline_claims", "unified_assets", "workflow_steps",
+  "workflow_widgets", "navigation_results", "background_agents",
 ];
 
 /** Default entries fetched per API page. Raised from 25 -> 100: fewer round
- * trips per thread means fewer opportunities to hit a 429, which was the
- * actual root cause of large-thread failures (not, as first suspected,
- * stale internal JSON). 1000 was tried and tested first but caused
- * consistent failures -- 100 is the current, evidence-based default.
- * Overridable per-run via --page-limit. */
+ * trips per thread means fewer opportunities to hit a 429, which was a
+ * real contributing factor to large-thread friction. Overridable per-run
+ * via --page-limit. */
 export const DEFAULT_PAGE_LIMIT = 100;
 
 /** Default pages after which a still-fetching thread is deferred to pass 2
@@ -48,13 +56,13 @@ const MAX_PAGES = 2000;
 
 /**
  * The real `/rest/thread/<uuid>` response, as declared in
- * types/conversation.ts, PLUS `background_entries` -- which the verified
- * real ConversationSaver.ts already reads via an `any` cast, confirming
- * the API genuinely returns it even though ConversationResponse doesn't
- * declare it. Extended here locally rather than editing that shared file
- * without confirmation.
+ * types/conversation.ts, PLUS `background_entries` and `next_cursor` --
+ * `next_cursor` is declared in ConversationResponse already but is
+ * documented there as always null in OUR OWN merged output; here it's the
+ * real, live value the API returns per page, which turned out to be the
+ * actual pagination mechanism (see rawFetchPageOnce).
  */
-type RawPageResponse = ConversationResponse & { background_entries?: unknown[] };
+type RawPageResponse = ConversationResponse & { background_entries?: unknown[]; next_cursor?: unknown };
 
 export interface ConversationSaverOptions {
   outputDir: string;
@@ -70,7 +78,17 @@ export interface ThreadFetchState {
   status: string;
   entries: ConversationEntry[];
   backgroundEntries: unknown[];
+  /** Informational only now -- count of entries fetched so far. No longer
+   * sent to the server; see `cursor` for what actually drives pagination. */
   offset: number;
+  /** The continuation token from the previous page's `next_cursor`, as a
+   * JSON string ready to be URL-encoded -- or null for the very first
+   * request. THIS is what actually drives pagination; a raw numeric offset
+   * turned out to be silently ignored by the server past the first page,
+   * which is why every thread beyond ~100 entries was stuck re-fetching
+   * the same window forever until this was found (via comparing our
+   * request against the real frontend's own DevTools network capture). */
+  cursor: string | null;
   pageIndex: number;
   hasNextPage: boolean;
   hitSafetyCap: boolean;
@@ -83,18 +101,20 @@ interface StagedPage {
   entries: ConversationEntry[];
   backgroundEntries: unknown[];
   hasNextPage: boolean;
+  /** Optional for backward compatibility with staging files written before
+   * this field existed -- loadStagingLines() falls back to null, meaning
+   * "resume as if this were the first page," which is the safest available
+   * fallback for old data that can't be trusted to have used the correct
+   * pagination mechanism anyway. */
+  nextCursor?: string | null;
 }
 
 /** Writes one JSON array field ("entries" or "background_entries") to an
  * already-open write stream, item by item, WITHOUT ever calling
- * JSON.stringify() on the whole array. Shared by both fields in
- * writeJsonStreaming() because both turned out to need the same
- * treatment: a first attempt streamed only `entries` and left
- * `background_entries` as a single JSON.stringify() call, on the
- * assumption (true for every other thread seen so far) that it would be
- * small -- but on this ~34,500+ entry, 340+-page deep-research thread,
- * background_entries proved large enough to hit V8's string-length limit
- * on its own, independent of the main entries array. */
+ * JSON.stringify() on the whole array. Necessary because V8 caps any
+ * single string at 0x1fffffe8 characters (~536.8 million, a hard engine
+ * limit) -- confirmed live on a large thread that either array field
+ * alone could exceed that if materialized as one string. */
 function writeJsonArrayField(stream: fs.WriteStream, fieldName: string, items: unknown[], isLastField: boolean): void {
   stream.write(`  "${fieldName}": [\n`);
   const lastIndex = items.length - 1;
@@ -112,18 +132,7 @@ function writeJsonArrayField(stream: fs.WriteStream, fieldName: string, items: u
  * Writes a JSON file shaped like `{ status, entries: [...], background_entries:
  * [...], has_next_page, next_cursor }` WITHOUT ever calling
  * JSON.stringify() on the whole object, or on either array field as a
- * whole. V8 caps any single string at 0x1fffffe8 characters (~536.8
- * million) -- a hard engine limit, not configurable. Both array fields are
- * streamed item-by-item so no single string involved in producing this
- * file is ever more than one array item's worth of content, regardless of
- * how large either array is in total.
- *
- * Note: this was never actually the crash site on the ~34,500-entry thread
- * that motivated this whole file -- see loadStagingLines() below for where
- * the real limit was being hit, before this function ever ran. Streaming
- * both fields here remains correct defensive practice regardless: nothing
- * stops a future thread's `entries` or `background_entries` array alone
- * from eventually exceeding the limit even after loadStagingLines is fixed.
+ * whole -- see writeJsonArrayField above for why.
  */
 function writeJsonStreaming(
   filePath: string,
@@ -149,12 +158,10 @@ function writeJsonStreaming(
  * Per-thread fetch engine. Exposes resumable primitives (startThread /
  * fetchNextPage / finalizeThread) so the caller (exportLibrary.ts) can pause
  * a thread after a bounded number of pages -- for the quick-pass/deferred-
- * pass split -- and later resume it exactly where it left off, without
- * re-fetching or re-risking 429s on pages already fetched.
+ * pass split -- and later resume it exactly where it left off.
  *
  * Owns per-thread durability (staging JSONL), final .json/.md output,
- * stale-file cleanup, and done.json bookkeeping -- consolidating
- * responsibilities that module-architecture.md assigns to this class.
+ * stale-file cleanup, and done.json bookkeeping.
  */
 export class ConversationSaver {
   private page: Page;
@@ -202,9 +209,7 @@ export class ConversationSaver {
   }
 
   /** Swaps the underlying Puppeteer page after a frame-error recovery,
-   * WITHOUT constructing a new ConversationSaver -- this preserves
-   * pageFetchRecords, failedSlugs, safetyCapSlugs, and the in-memory
-   * doneFile across the recovery, instead of silently losing them. */
+   * WITHOUT constructing a new ConversationSaver. */
   setPage(page: Page): void {
     this.page = page;
   }
@@ -225,16 +230,8 @@ export class ConversationSaver {
 
   /** Reads the JSONL staging file back in line-by-line via a stream,
    * WITHOUT ever calling fs.readFileSync() to load the whole file as one
-   * string. Confirmed live as the actual root cause of a repeated,
-   * misdiagnosed crash: fs.readFileSync(path, "utf-8") on this thread's
-   * 688MB staging file produced a single ~688-million-character JS
-   * string, exceeding V8's 0x1fffffe8 (~536.8M) hard limit -- and it threw
-   * from INSIDE startThread(), before the fetch loop ever ran, which is
-   * why two earlier rounds of fixes to the JSON *writer* never had a
-   * chance to matter: execution never got that far. Each individual line
-   * here (one page's worth of data, a few MB at most) is nowhere near the
-   * limit, so streaming line-by-line resolves it regardless of total file
-   * size. */
+   * string -- confirmed live that a large thread's staging file can itself
+   * exceed V8's string-length limit if read all at once. */
   private async loadStagingLines(slug: string): Promise<StagedPage[]> {
     const stagingPath = this.stagingPathFor(slug);
     if (!fs.existsSync(stagingPath)) return [];
@@ -251,11 +248,6 @@ export class ConversationSaver {
       try {
         pages.push(JSON.parse(trimmed));
       } catch {
-        // A truncated trailing line means the process crashed mid-write
-        // (including a disk-full failure mid-append). JSONL's
-        // one-object-per-line format makes this harmless: every earlier
-        // line is a complete, independently-parseable object, so we
-        // discard only the incomplete tail and resume from the last good line.
         this.log(`discarding truncated staging line for ${slug} (crash recovery)`);
       }
     }
@@ -283,6 +275,7 @@ export class ConversationSaver {
     let pageIndex = 0;
     let hasNextPage = true;
     let status = "";
+    let cursor: string | null = null;
 
     for (const stagedPage of staged) {
       entries.push(...stagedPage.entries);
@@ -290,6 +283,7 @@ export class ConversationSaver {
       pageIndex = stagedPage.pageIndex + 1;
       hasNextPage = stagedPage.hasNextPage;
       status = stagedPage.status;
+      cursor = stagedPage.nextCursor ?? null;
     }
     if (staged.length > 0) {
       this.log(`resuming ${conversation.slug} from ${staged.length} staged page(s), ${entries.length} entries recovered`);
@@ -302,6 +296,7 @@ export class ConversationSaver {
       entries,
       backgroundEntries,
       offset: entries.length,
+      cursor,
       pageIndex,
       hasNextPage,
       hitSafetyCap: false,
@@ -315,14 +310,27 @@ export class ConversationSaver {
 
   /** The ONLY thing that runs inside page.evaluate: a single bare fetch,
    * returning plain, serializable status/headers/body data. All retry
-   * decisions happen in Node afterwards (see fetchNextPage), so no single
-   * Puppeteer call ever has to contain a retry loop -- eliminating the
-   * protocolTimeout risk a stacked in-browser retry loop would carry. */
-  private async rawFetchPageOnce(threadId: string, offset: number): Promise<RawFetchResult> {
+   * decisions happen in Node afterwards (see fetchNextPage).
+   *
+   * Request shape verified directly against the real Perplexity frontend's
+   * own DevTools Network capture on 2026-09-08 (a previous version of this
+   * function used a raw numeric `offset` to paginate, which the server
+   * silently ignored past the first page -- every thread beyond ~100
+   * entries was stuck re-fetching the exact same window forever). The
+   * real mechanism is a `cursor` query parameter: a URL-encoded JSON
+   * continuation token, echoed back from the previous response's
+   * `next_cursor` field. `offset` is always 0 in the real product's
+   * requests; `from_first` is true only when there's no cursor yet (i.e.
+   * the very first page). */
+  private async rawFetchPageOnce(threadId: string, cursor: string | null): Promise<RawFetchResult> {
     return this.page.evaluate(
-      async (tid: string, off: number, limit: number, blocks: string[]): Promise<RawFetchResult> => {
+      async (tid: string, cur: string | null, limit: number, blocks: string[]): Promise<RawFetchResult> => {
         const blocksParam = blocks.map((b) => `supported_block_use_cases=${b}`).join("&");
-        const url = `/rest/thread/${tid}?with_parent_info=true&with_schematized_response=true&version=2.18&source=default&limit=${limit}&offset=${off}&from_first=true&${blocksParam}`;
+        const cursorParam = cur ? `&cursor=${encodeURIComponent(cur)}` : "";
+        const url =
+          `/rest/thread/${tid}?with_parent_info=true&with_schematized_response=true&version=2.18&source=default` +
+          `&limit=${limit}&offset=0&from_first=${cur === null}&with_first_entry=false&with_latest_entry=false` +
+          `&${blocksParam}${cursorParam}`;
 
         const resp = await fetch(url, {
           credentials: "include",
@@ -336,7 +344,7 @@ export class ConversationSaver {
         return { status: resp.status, headers, bodyText };
       },
       threadId,
-      offset,
+      cursor,
       this.pageLimit,
       SUPPORTED_BLOCKS
     );
@@ -351,7 +359,7 @@ export class ConversationSaver {
     const label = `${state.conversation.slug} page ${state.pageIndex}`;
 
     const { data, attempts, tier } = await fetchWithTieredRetry(
-      () => this.rawFetchPageOnce(state.threadId, state.offset),
+      () => this.rawFetchPageOnce(state.threadId, state.cursor),
       (bodyText) => JSON.parse(bodyText) as RawPageResponse,
       { verbose: this.verbose, label, adaptive: state.adaptive, maxRetries: this.rateLimitRetries }
     );
@@ -359,6 +367,8 @@ export class ConversationSaver {
     const durationMs = Date.now() - start;
     const pageEntries = data.entries ?? [];
     const pageBackgroundEntries = data.background_entries ?? [];
+    const nextCursorStr =
+      typeof data.next_cursor === "string" ? data.next_cursor : data.next_cursor ? JSON.stringify(data.next_cursor) : null;
 
     this.pageFetchRecords.push({
       slug: state.conversation.slug,
@@ -367,7 +377,9 @@ export class ConversationSaver {
       tier,
       retries: attempts - 1,
     });
-    this.log(`fetched page ${state.pageIndex} for ${state.conversation.slug}: ${pageEntries.length} entries in ${durationMs}ms (tier=${tier})`);
+    this.log(
+      `fetched page ${state.pageIndex} for ${state.conversation.slug}: ${pageEntries.length} entries in ${durationMs}ms (tier=${tier})`
+    );
 
     this.appendStagingLine(state.conversation.slug, {
       pageIndex: state.pageIndex,
@@ -375,13 +387,14 @@ export class ConversationSaver {
       entries: pageEntries,
       backgroundEntries: pageBackgroundEntries,
       hasNextPage: Boolean(data.has_next_page),
+      nextCursor: nextCursorStr,
     });
 
-    // ConversationResponse.status is a required string, so no fallback is needed here.
     state.status = data.status;
     state.entries.push(...pageEntries);
     state.backgroundEntries.push(...pageBackgroundEntries);
     state.offset += pageEntries.length;
+    state.cursor = nextCursorStr;
     state.pageIndex += 1;
     state.hasNextPage = Boolean(data.has_next_page) && pageEntries.length > 0;
 
@@ -397,8 +410,7 @@ export class ConversationSaver {
   }
 
   /** Deletes the previously exported .md/.json pair for a thread. Called
-   * only AFTER the new pair is confirmed written -- see finalizeThread()
-   * for why the ordering matters. */
+   * only AFTER the new pair is confirmed written. */
   private deleteStaleFiles(slug: string): void {
     const previous = this.doneFile.processed[slug];
     if (!previous) return;
@@ -411,15 +423,10 @@ export class ConversationSaver {
     }
   }
 
-  /** Writes the final .json/.md pair, updates done.json (saved immediately
-   * -- the smallest safely-atomic checkpoint unit, so a crash on thread N+1
-   * never costs you thread N), and clears the staging file only after both
-   * permanent files and done.json are safely on disk.
-   *
-   * Deliberately writes the NEW files before deleting the OLD stale ones
-   * (reordered from an earlier version that deleted first): if a write
-   * fails partway -- disk full, permissions, anything -- the old pair
-   * stays intact instead of being deleted with nothing to replace it. */
+  /** Writes the final .json/.md pair, updates done.json, and clears the
+   * staging file only after both permanent files and done.json are
+   * safely on disk. Writes the NEW files before deleting the OLD stale
+   * ones, so a write failure partway through never leaves neither. */
   async finalizeThread(state: ThreadFetchState): Promise<ThreadResult> {
     const { slug } = state.conversation;
 
