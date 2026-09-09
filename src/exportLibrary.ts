@@ -35,10 +35,20 @@ function isFrameError(message: string): boolean {
  * mid-run, in which case simply rerunning (without a fresh login) won't
  * help. Phrased as a possibility, not a certainty -- it could still just be
  * a one-off blip on an otherwise-valid session, in which case rerunning
- * resumes normally. */
+ * resumes normally.
+ *
+ * Logs err.stack (when available), not just err.message: a bare message
+ * like "Cannot create a string longer than 0x1fffffe8 characters" gives no
+ * indication of WHICH line threw it, which mattered in practice -- two
+ * rounds of guesses (the whole merged object, then just background_entries)
+ * both missed the actual site because nothing surfaced the stack trace to
+ * confirm or rule them out directly. */
 function logFailureWithResumeHint(url: string, slug: string, outputDir: string, err: unknown): void {
-  const message = (err as Error).message ?? String(err);
-  console.error(`  FAILED ${url}: ${message}`);
+  const error = err as Error;
+  console.error(`  FAILED ${url}: ${error.message ?? String(err)}`);
+  if (error?.stack) {
+    console.error(`  Stack trace:\n${error.stack}`);
+  }
   console.error(
     `  Progress is not lost: every page fetched so far is saved in ` +
       `${outputDir}/.staging/${slug}.partial.jsonl -- rerun the same command to resume from where this left off.`

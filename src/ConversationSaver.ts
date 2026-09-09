@@ -1,5 +1,6 @@
 import fs from "fs";
 import path from "path";
+import readline from "readline";
 import type { Page } from "puppeteer";
 import {
   AdaptiveDelay,
@@ -112,21 +113,17 @@ function writeJsonArrayField(stream: fs.WriteStream, fieldName: string, items: u
  * [...], has_next_page, next_cursor }` WITHOUT ever calling
  * JSON.stringify() on the whole object, or on either array field as a
  * whole. V8 caps any single string at 0x1fffffe8 characters (~536.8
- * million) -- a hard engine limit, not configurable. Confirmed live,
- * twice: first the whole merged object crashed finalizeThread() with
- * "Cannot create a string longer than 0x1fffffe8 characters"; after
- * streaming `entries` item-by-item, the SAME error recurred because
- * `background_entries` was still a single JSON.stringify() call. Both
- * array fields are now streamed the same way, so no single string
- * involved in producing this file is ever more than one array item's
- * worth of content, regardless of how large either array is in total.
+ * million) -- a hard engine limit, not configurable. Both array fields are
+ * streamed item-by-item so no single string involved in producing this
+ * file is ever more than one array item's worth of content, regardless of
+ * how large either array is in total.
  *
- * Residual, accepted risk: if a single individual entry or background
- * entry were itself larger than ~536.8M characters, streaming wouldn't
- * help -- but that would require one item to be roughly the size of this
- * entire 34,500-entry thread's JSON, which is not a realistic scenario
- * for this data (average observed item size is on the order of tens of
- * KB, many orders of magnitude below the limit).
+ * Note: this was never actually the crash site on the ~34,500-entry thread
+ * that motivated this whole file -- see loadStagingLines() below for where
+ * the real limit was being hit, before this function ever ran. Streaming
+ * both fields here remains correct defensive practice regardless: nothing
+ * stops a future thread's `entries` or `background_entries` array alone
+ * from eventually exceeding the limit even after loadStagingLines is fixed.
  */
 function writeJsonStreaming(
   filePath: string,
@@ -226,17 +223,33 @@ export class ConversationSaver {
     fs.appendFileSync(this.stagingPathFor(slug), `${JSON.stringify(page)}\n`);
   }
 
-  private loadStagingLines(slug: string): StagedPage[] {
+  /** Reads the JSONL staging file back in line-by-line via a stream,
+   * WITHOUT ever calling fs.readFileSync() to load the whole file as one
+   * string. Confirmed live as the actual root cause of a repeated,
+   * misdiagnosed crash: fs.readFileSync(path, "utf-8") on this thread's
+   * 688MB staging file produced a single ~688-million-character JS
+   * string, exceeding V8's 0x1fffffe8 (~536.8M) hard limit -- and it threw
+   * from INSIDE startThread(), before the fetch loop ever ran, which is
+   * why two earlier rounds of fixes to the JSON *writer* never had a
+   * chance to matter: execution never got that far. Each individual line
+   * here (one page's worth of data, a few MB at most) is nowhere near the
+   * limit, so streaming line-by-line resolves it regardless of total file
+   * size. */
+  private async loadStagingLines(slug: string): Promise<StagedPage[]> {
     const stagingPath = this.stagingPathFor(slug);
     if (!fs.existsSync(stagingPath)) return [];
 
-    const raw = fs.readFileSync(stagingPath, "utf-8");
-    const lines = raw.split("\n").filter((line) => line.trim().length > 0);
     const pages: StagedPage[] = [];
+    const rl = readline.createInterface({
+      input: fs.createReadStream(stagingPath, { encoding: "utf-8" }),
+      crlfDelay: Infinity,
+    });
 
-    for (const line of lines) {
+    for await (const line of rl) {
+      const trimmed = line.trim();
+      if (!trimmed) continue;
       try {
-        pages.push(JSON.parse(line));
+        pages.push(JSON.parse(trimmed));
       } catch {
         // A truncated trailing line means the process crashed mid-write
         // (including a disk-full failure mid-append). JSONL's
@@ -264,7 +277,7 @@ export class ConversationSaver {
     }
     const threadId = match[1];
 
-    const staged = this.loadStagingLines(conversation.slug);
+    const staged = await this.loadStagingLines(conversation.slug);
     const entries: ConversationEntry[] = [];
     const backgroundEntries: unknown[] = [];
     let pageIndex = 0;
@@ -406,14 +419,7 @@ export class ConversationSaver {
    * Deliberately writes the NEW files before deleting the OLD stale ones
    * (reordered from an earlier version that deleted first): if a write
    * fails partway -- disk full, permissions, anything -- the old pair
-   * stays intact instead of being deleted with nothing to replace it.
-   *
-   * The .json write is streamed field-by-field and item-by-item (see
-   * writeJsonStreaming) rather than built as one JSON.stringify() string --
-   * confirmed live, twice, that a large-enough thread's pretty-printed JSON
-   * (first via `entries`, then via `background_entries`) exceeds V8's
-   * 0x1fffffe8-character string limit if any single array is materialized
-   * all at once. */
+   * stays intact instead of being deleted with nothing to replace it. */
   async finalizeThread(state: ThreadFetchState): Promise<ThreadResult> {
     const { slug } = state.conversation;
 
