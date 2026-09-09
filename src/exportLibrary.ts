@@ -198,8 +198,12 @@ export default async function exportLibrary(options: ExportLibraryOptions): Prom
     let quickProcessed = 0;
     let successSinceRefresh = 0;
     const quickStart = Date.now();
+    let quickIndex = 0;
 
     for (const conversation of conversations) {
+      quickIndex += 1;
+      const shortTitle = conversation.title.length > 60 ? `${conversation.title.slice(0, 60)}...` : conversation.title;
+      console.log(`Processing ${quickIndex}/${conversations.length}: ${shortTitle} (${conversation.slug})`);
       try {
         let state = await withFrameRecovery(() => saver.startThread(conversation));
         while (!saver.isDone(state) && state.pageIndex < options.deferAfterPages) {
@@ -238,8 +242,12 @@ export default async function exportLibrary(options: ExportLibraryOptions): Prom
     const deferredFailedStart = saver.failedSlugs.length;
     const deferredStart = Date.now();
     let deferredProcessed = 0;
+    let deferredIndex = 0;
 
     for (let state of deferred) {
+        deferredIndex += 1;
+        const shortTitle = state.conversation.title.length > 60 ? `${state.conversation.title.slice(0, 60)}...` : state.conversation.title;
+        console.log(`Processing deferred ${deferredIndex}/${deferred.length}: ${shortTitle} (${state.conversation.slug})`);
       try {
         while (!saver.isDone(state)) {
           state = await withFrameRecovery(() => saver.fetchNextPage(state));
