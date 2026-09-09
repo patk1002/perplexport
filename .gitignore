@@ -6,8 +6,4 @@ package-lock.json
 *_orig.ts
 my-export/
 *.log
-done.json.bak
-my-export-old-format/
-my-export.bak/
-done.json.stats-*.json
 **/.staging/

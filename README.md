@@ -24,6 +24,27 @@
 > 5. **New flags**: `-v/--verbose` (opt-in detailed logging), `-u/--url`
 >    (process one thread, skipping the full library scan), `--page-limit`,
 >    `--defer-after-pages`, `--rate-limit-retries`.
+> 6. **Pagination root-cause fix** — `rawFetchPageOnce` previously paginated
+>    via a raw incrementing `offset` parameter, which the server silently
+>    ignores past the first page; the real mechanism is a `cursor` query
+>    parameter (a continuation token from the previous response's
+>    `next_cursor` field), confirmed by diffing our request against the
+>    live product's own DevTools network capture. Every thread beyond
+>    ~100 entries was previously stuck re-fetching the same fixed window
+>    forever, disguised as genuine growth (`has_next_page: true`) — a
+>    684-entry-looking thread turned out to be 199 entries once fixed.
+>    This, not rate limiting alone, was the actual cause of the worst
+>    large-thread failures described in point 2 above.
+> 7. **Streaming JSON output** — the final `.json` write and the JSONL
+>    staging-file read are both now streamed line-by-line/item-by-item
+>    instead of using a single `JSON.stringify()`/`readFileSync()` call,
+>    avoiding V8's hard ~536.8M-character string-length limit on very
+>    large threads.
+> 8. **Broadened retryable statuses** — 502/504 added alongside 429/503;
+>    raw network-level exceptions (not just HTTP status codes) are now
+>    also retried.
+> 9. **Stats files relocated** to `<outputDir>/stat-files/` instead of the
+>    project root.
 
 > **Fork notice (2026-09-05).** This fork builds on
 > [`osedlacek/perplexport`](https://github.com/osedlacek/perplexport) (itself
