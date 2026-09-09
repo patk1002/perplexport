@@ -84,25 +84,49 @@ interface StagedPage {
   hasNextPage: boolean;
 }
 
+/** Writes one JSON array field ("entries" or "background_entries") to an
+ * already-open write stream, item by item, WITHOUT ever calling
+ * JSON.stringify() on the whole array. Shared by both fields in
+ * writeJsonStreaming() because both turned out to need the same
+ * treatment: a first attempt streamed only `entries` and left
+ * `background_entries` as a single JSON.stringify() call, on the
+ * assumption (true for every other thread seen so far) that it would be
+ * small -- but on this ~34,500+ entry, 340+-page deep-research thread,
+ * background_entries proved large enough to hit V8's string-length limit
+ * on its own, independent of the main entries array. */
+function writeJsonArrayField(stream: fs.WriteStream, fieldName: string, items: unknown[], isLastField: boolean): void {
+  stream.write(`  "${fieldName}": [\n`);
+  const lastIndex = items.length - 1;
+  items.forEach((item, i) => {
+    const indented = JSON.stringify(item, null, 2)
+      .split("\n")
+      .map((line) => `    ${line}`)
+      .join("\n");
+    stream.write(indented + (i === lastIndex ? "\n" : ",\n"));
+  });
+  stream.write(isLastField ? "  ]\n" : "  ],\n");
+}
+
 /**
  * Writes a JSON file shaped like `{ status, entries: [...], background_entries:
  * [...], has_next_page, next_cursor }` WITHOUT ever calling
- * JSON.stringify() on the whole object. V8 caps any single string at
- * 0x1fffffe8 characters (~536.8 million) -- a hard engine limit, not a
- * configurable one. A single very large thread's pretty-printed JSON can
- * exceed that (confirmed live: a ~34,500+ entry thread crashed
- * finalizeThread() with "Cannot create a string longer than
- * 0x1fffffe8 characters" the instant JSON.stringify(merged, null, 2) tried
- * to materialize the whole thing as one string). Streaming avoids this
- * entirely: each write() call only ever serializes ONE entry at a time, so
- * no single string involved is anywhere near the limit regardless of how
- * many entries the thread has in total.
+ * JSON.stringify() on the whole object, or on either array field as a
+ * whole. V8 caps any single string at 0x1fffffe8 characters (~536.8
+ * million) -- a hard engine limit, not configurable. Confirmed live,
+ * twice: first the whole merged object crashed finalizeThread() with
+ * "Cannot create a string longer than 0x1fffffe8 characters"; after
+ * streaming `entries` item-by-item, the SAME error recurred because
+ * `background_entries` was still a single JSON.stringify() call. Both
+ * array fields are now streamed the same way, so no single string
+ * involved in producing this file is ever more than one array item's
+ * worth of content, regardless of how large either array is in total.
  *
- * `backgroundEntries` is written with a single JSON.stringify() call
- * rather than streamed -- based on every thread observed so far this array
- * is empty or small, nowhere near large enough to risk the same limit. If
- * a future thread ever proves that assumption wrong, this would need the
- * same per-item streaming treatment as `entries`.
+ * Residual, accepted risk: if a single individual entry or background
+ * entry were itself larger than ~536.8M characters, streaming wouldn't
+ * help -- but that would require one item to be roughly the size of this
+ * entire 34,500-entry thread's JSON, which is not a realistic scenario
+ * for this data (average observed item size is on the order of tens of
+ * KB, many orders of magnitude below the limit).
  */
 function writeJsonStreaming(
   filePath: string,
@@ -117,19 +141,9 @@ function writeJsonStreaming(
     stream.write(`  "status": ${JSON.stringify(merged.status)},\n`);
     stream.write(`  "has_next_page": ${JSON.stringify(merged.hasNextPage)},\n`);
     stream.write(`  "next_cursor": ${JSON.stringify(merged.nextCursor)},\n`);
-    stream.write(`  "background_entries": ${JSON.stringify(merged.backgroundEntries)},\n`);
-    stream.write('  "entries": [\n');
-
-    const lastIndex = merged.entries.length - 1;
-    merged.entries.forEach((entry, i) => {
-      const indented = JSON.stringify(entry, null, 2)
-        .split("\n")
-        .map((line) => `    ${line}`)
-        .join("\n");
-      stream.write(indented + (i === lastIndex ? "\n" : ",\n"));
-    });
-
-    stream.write("  ]\n}\n");
+    writeJsonArrayField(stream, "background_entries", merged.backgroundEntries, false);
+    writeJsonArrayField(stream, "entries", merged.entries, true);
+    stream.write("}\n");
     stream.end();
   });
 }
@@ -394,10 +408,12 @@ export class ConversationSaver {
    * fails partway -- disk full, permissions, anything -- the old pair
    * stays intact instead of being deleted with nothing to replace it.
    *
-   * The .json write is streamed entry-by-entry (see writeJsonStreaming)
-   * rather than built as one JSON.stringify() string -- confirmed live
-   * that a large-enough thread's pretty-printed JSON exceeds V8's
-   * 0x1fffffe8-character string limit if materialized all at once. */
+   * The .json write is streamed field-by-field and item-by-item (see
+   * writeJsonStreaming) rather than built as one JSON.stringify() string --
+   * confirmed live, twice, that a large-enough thread's pretty-printed JSON
+   * (first via `entries`, then via `background_entries`) exceeds V8's
+   * 0x1fffffe8-character string limit if any single array is materialized
+   * all at once. */
   async finalizeThread(state: ThreadFetchState): Promise<ThreadResult> {
     const { slug } = state.conversation;
 
