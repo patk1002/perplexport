@@ -52,7 +52,7 @@ node dist/cli.js -e <your-perplexity-email> -o ./conversations -d done.json
 
 - If the browser doesn't open at all, or opens and closes instantly, try `npx puppeteer browsers install chrome`.
 - Puppeteer doesn't like to be run from a global installation — try cloning the project and running it locally instead.
-- A small, consistent subset of threads may return HTTP 403 on their per-thread fetch while the library listing and every other thread succeed. The root cause isn't fully confirmed; suspected causes include archived/private threads or a stale per-thread access scope. These are safely skipped and automatically retried on your next run without blocking the rest of the export.
+- A small, consistent subset of threads may return HTTP 403 on their per-thread fetch — the same threads fail identically across multiple fresh logins, while the library listing and every other thread succeed. If you open one of these threads directly in a regular browser, it typically shows "This answer is private... Request Access," even though you are the account's own owner, and requesting access never resolves anything (there's no separate owner to approve it). This matches a reported Perplexity backend bug where the index that serves thread content gets out of sync with the index that determines ownership, effectively locking an account out of its own thread. There's no client-side fix: these threads are safely skipped, their partial progress is preserved in `.staging/`, and the rest of the export continues unaffected. Retry occasionally in case Perplexity resolves the desync server-side, or contact Perplexity support with the affected thread ID if it persists.
 
 ## Fork history
 
